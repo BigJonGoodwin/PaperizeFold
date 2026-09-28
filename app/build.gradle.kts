@@ -31,11 +31,13 @@ android {
     sourceSets.getByName("androidTest").assets.directories.add("$projectDir/schemas")
 
     defaultConfig {
-        applicationId = "com.anthonyla.paperize"
+        applicationId = "io.github.bigjongoodwin.paperizefold"
         minSdk = 31
         targetSdk = 36
-        versionCode = 57
-        versionName = "4.2.0"
+        // PaperizeFold: CI passes the build number so every build is a newer version.
+        val foldBuild = System.getenv("FOLD_BUILD_NUMBER")?.toIntOrNull() ?: 0
+        versionCode = 57_000 + foldBuild
+        versionName = "4.2.0-fold.$foldBuild"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

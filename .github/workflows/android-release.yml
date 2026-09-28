@@ -1,44 +1,24 @@
-name: Paperize CI/CD Pipeline
+name: PaperizeFold Build
 
+# Every push to master builds a signed APK and publishes it as a GitHub Release,
+# so Obtainium can install and update it. You can also run it by hand from the
+# Actions tab ("Run workflow").
 on:
   push:
     branches: [ "master" ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ "master" ]
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: fold-release
+  cancel-in-progress: false
 
 jobs:
-  test:
-    name: Run Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository source code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Run unit tests
-        run: ./gradlew clean test
-
-      - name: Run Android lint
-        run: ./gradlew :app:lintDebug
-
   build:
-    name: Build Signed APK
+    name: Build and release APK
     runs-on: ubuntu-latest
-    needs: test
-    if: github.event_name == 'push'
     steps:
       - name: Checkout repository source code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -53,64 +33,51 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Decode Base64 Keystore
+      # Uses the fork's own signing key (signing/paperizefold.jks). If you later add
+      # repository secrets SIGNING_KEYSTORE_BASE64 / SIGNING_KEY_ALIAS / SIGNING_STORE_PASSWORD /
+      # SIGNING_KEY_PASSWORD, those are used instead.
+      - name: Select signing key
         env:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SECRET_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SECRET_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          echo $SIGNING_KEYSTORE_BASE64 | base64 --decode > ${{ github.workspace }}/keystore.jks
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+            {
+              echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks"
+              echo "SIGNING_KEY_ALIAS=$SECRET_ALIAS"
+              echo "SIGNING_STORE_PASSWORD=$SECRET_STORE_PASSWORD"
+              echo "SIGNING_KEY_PASSWORD=$SECRET_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "SIGNING_KEYSTORE_PATH=$GITHUB_WORKSPACE/signing/paperizefold.jks"
+              echo "SIGNING_KEY_ALIAS=paperizefold"
+              echo "SIGNING_STORE_PASSWORD=paperizefold"
+              echo "SIGNING_KEY_PASSWORD=paperizefold"
+            } >> "$GITHUB_ENV"
+          fi
 
-      - name: Build Release APK
+      - name: Build release APK
         env:
-          SIGNING_KEYSTORE_PATH: ${{ github.workspace }}/keystore.jks
-          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          FOLD_BUILD_NUMBER: ${{ github.run_number }}
         run: ./gradlew assembleRelease
 
-      - name: Get Version Name
-        id: get_version
-        shell: bash
+      - name: Name APK
+        id: apk
         run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION_NAME=${GITHUB_REF_NAME}
-          else
-            RAW_VERSION=$(grep "versionName =" app/build.gradle.kts | awk -F'"' '{print $2}')
-            VERSION_NAME="v${RAW_VERSION}"
-          fi
-          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_OUTPUT
+          NAME="PaperizeFold-4.2.0-fold.${{ github.run_number }}.apk"
+          mv app/build/outputs/apk/release/app-release.apk "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Name APK for distribution
-        shell: bash
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mv app/build/outputs/apk/release/app-release.apk \
-            "app/build/outputs/apk/release/paperize-${{ steps.get_version.outputs.VERSION_NAME }}.apk"
-
-      - name: Upload APK as a build artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: paperize-${{ steps.get_version.outputs.VERSION_NAME }}
-          path: app/build/outputs/apk/release/paperize-${{ steps.get_version.outputs.VERSION_NAME }}.apk
-          if-no-files-found: error
-
-  release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-    steps:
-      - name: Download signed APK artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          pattern: paperize-v*
-          path: ./apk-artifact
-          merge-multiple: true
-
-      - name: Create Draft Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
-        with:
-          files: ./apk-artifact/paperize-v*.apk
-          draft: true
-          generate_release_notes: true
-
+          TAG="fold-${{ github.run_number }}"
+          gh release create "$TAG" "${{ steps.apk.outputs.name }}" \
+            --target "${{ github.sha }}" \
+            --title "PaperizeFold build ${{ github.run_number }}" \
+            --notes "Automatic build from ${{ github.sha }}."

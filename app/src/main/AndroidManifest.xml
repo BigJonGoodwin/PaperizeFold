@@ -73,6 +73,17 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- PaperizeFold: keeps cover and inner screen wallpapers in sync on fold/unfold -->
+        <service
+            android:name=".service.fold.FoldSyncService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Listens for a foldable being folded or unfolded and re-applies the current wallpaper to the screen that became active." />
+        </service>
+
         <!-- Broadcast Receivers -->
         <receiver
             android:name=".service.alarm.BootReceiver"
@@ -81,6 +92,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

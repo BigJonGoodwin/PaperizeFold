@@ -4,6 +4,7 @@ import android.app.WallpaperManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.util.Size
 import com.anthonyla.paperize.core.EmptyAlbumException
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.constants.Constants
@@ -108,13 +109,24 @@ class WallpaperController @Inject constructor(
         }
     }
 
-    suspend fun reapply(screen: ScreenType, settings: ScheduleSettings): WallpaperChangeOutcome {
+    /**
+     * @param targetSize Render size override (PaperizeFold: the cover panel while folded).
+     * @param advanceIfMissing When the current image can't be rendered, move to the next one.
+     *   Fold syncing passes false so folding the phone never skips a wallpaper.
+     */
+    suspend fun reapply(
+        screen: ScreenType,
+        settings: ScheduleSettings,
+        targetSize: Size? = null,
+        advanceIfMissing: Boolean = true
+    ): WallpaperChangeOutcome {
         if (screen == ScreenType.LIVE) return WallpaperChangeOutcome()
         var outcome = WallpaperChangeOutcome()
         for (target in screen.staticScreens()) {
             val albumId = if (target == ScreenType.HOME) settings.homeAlbumId else settings.lockAlbumId
             if (albumId == null) continue
-            val bitmap = render(albumId, target).getOrNull()
+            val bitmap = render(albumId, target, targetSize = targetSize).getOrNull()
+            if (bitmap == null && !advanceIfMissing) continue
             val result = if (bitmap == null) changeSelected(albumId, target) else {
                 applyBitmap(bitmap, target)
                 WallpaperChangeOutcome(changed = true)

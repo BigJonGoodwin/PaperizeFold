@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="album_create_failed">Could not create the album. Please try again.</string>
-  <string name="app_name">Paperize</string>
+  <string name="app_name">Paperize Fold</string>
   <string name="import_adding_folder">Adding folder…</string>
   <string name="import_adding_wallpapers">Adding wallpapers…</string>
   <string name="import_scanning">Scanning… %1$d found</string>
@@ -229,4 +229,9 @@
   <string name="sort_load_failed">Could not load the album. Go back and try again.</string>
   <string name="sort_save_failed">Could not save the order. Please try again.</string>
   <string name="reset_failed">Could not finish resetting data. Please try again.</string>
+  <!-- PaperizeFold -->
+  <string name="fold_sync_channel_name" translatable="false">Fold sync</string>
+  <string name="fold_sync_channel_description" translatable="false">Keeps the cover and inner screen wallpapers matched. You can hide this notification.</string>
+  <string name="fold_sync_notification_title" translatable="false">Fold sync active</string>
+  <string name="fold_sync_notification_text" translatable="false">Matching wallpapers when you fold or unfold</string>
 </resources>

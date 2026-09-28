@@ -10,6 +10,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.Configuration
 import com.anthonyla.paperize.core.constants.Constants
 import com.anthonyla.paperize.core.util.DataResetManager
+import com.anthonyla.paperize.service.fold.FoldSyncService
 import com.anthonyla.paperize.service.worker.AlbumRefreshScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -55,5 +56,7 @@ class PaperizeApplication : Application(), Configuration.Provider, DefaultLifecy
 
     override fun onStart(owner: LifecycleOwner) {
         AlbumRefreshScheduler.enqueue(this)
+        // PaperizeFold: the app is visible here, so starting the foreground service is allowed.
+        FoldSyncService.start(this)
     }
 }

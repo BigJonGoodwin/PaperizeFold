@@ -2,6 +2,7 @@ package com.anthonyla.paperize.core.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Size
 import androidx.core.net.toUri
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.domain.model.ScheduleSettings
@@ -12,7 +13,16 @@ import kotlinx.coroutines.ensureActive
 import javax.inject.Inject
 
 class WallpaperRenderer @Inject constructor(@param:ApplicationContext private val context: Context) {
-    suspend fun render(wallpaper: Wallpaper, screen: ScreenType, settings: ScheduleSettings): Bitmap? {
+    /**
+     * @param targetSize Canvas size to render for. Null keeps upstream behavior (largest built-in
+     * panel). PaperizeFold passes the cover panel's size when re-syncing a folded device.
+     */
+    suspend fun render(
+        wallpaper: Wallpaper,
+        screen: ScreenType,
+        settings: ScheduleSettings,
+        targetSize: Size? = null
+    ): Bitmap? {
         currentCoroutineContext().ensureActive()
         val effects = when (screen) {
             ScreenType.HOME, ScreenType.BOTH -> settings.homeEffects
@@ -24,7 +34,7 @@ class WallpaperRenderer @Inject constructor(@param:ApplicationContext private va
             ScreenType.LOCK -> settings.lockScalingType
             ScreenType.LIVE -> settings.liveScalingType
         }
-        val size = getDeviceScreenSize(context)
+        val size = targetSize ?: getDeviceScreenSize(context)
         var bitmap = retrieveBitmap(context, wallpaper.uri.toUri(), size.width, size.height, scaling,
             usesLauncherManagedScrolling(screen, scaling, settings.homeScrollingEnabled)) ?: return null
         try {

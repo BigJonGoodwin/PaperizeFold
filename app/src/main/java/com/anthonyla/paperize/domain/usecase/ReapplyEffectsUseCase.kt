@@ -2,6 +2,7 @@ package com.anthonyla.paperize.domain.usecase
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Size
 import com.anthonyla.paperize.R
 import com.anthonyla.paperize.core.Result
 import com.anthonyla.paperize.core.ScreenType
@@ -17,12 +18,19 @@ class ReapplyEffectsUseCase @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val renderer: WallpaperRenderer
 ) {
-    suspend operator fun invoke(albumId: String, screenType: ScreenType, wallpaperId: String? = null): Result<Bitmap> =
+    suspend operator fun invoke(
+        albumId: String,
+        screenType: ScreenType,
+        wallpaperId: String? = null,
+        targetSize: Size? = null
+    ): Result<Bitmap> =
         Result.runCatching {
             val wallpaper = if (wallpaperId != null) wallpaperRepository.getWallpaperById(wallpaperId)
                 else wallpaperRepository.getCurrentWallpaper(albumId, screenType)
             val message = context.getString(R.string.error_no_valid_wallpaper_after_retries)
             checkNotNull(wallpaper) { message }
-            checkNotNull(renderer.render(wallpaper, screenType, settingsRepository.getScheduleSettings())) { message }
+            checkNotNull(
+                renderer.render(wallpaper, screenType, settingsRepository.getScheduleSettings(), targetSize)
+            ) { message }
         }
 }
