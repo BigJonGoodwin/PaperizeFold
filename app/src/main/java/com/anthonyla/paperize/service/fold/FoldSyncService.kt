@@ -29,6 +29,7 @@ import androidx.core.content.edit
 import com.anthonyla.paperize.R
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.WallpaperMode
+import com.anthonyla.paperize.data.datastore.FoldPreferences
 import com.anthonyla.paperize.domain.model.ScheduleSettings
 import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.domain.repository.WallpaperRepository
@@ -71,6 +72,10 @@ class FoldSyncService : Service() {
     @Inject lateinit var wallpaperRepository: WallpaperRepository
     @Inject lateinit var wallpaperChangeLock: WallpaperChangeLock
     @Inject lateinit var quietChangeGate: QuietChangeGate
+    @Inject lateinit var foldPreferences: FoldPreferences
+
+    /** Fold syncing only makes sense on foldables; the quiet-change events run everywhere. */
+    private var foldable = false
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -136,6 +141,7 @@ class FoldSyncService : Service() {
         super.onCreate()
         displayManager = getSystemService(DisplayManager::class.java)
         audioManager = getSystemService(AudioManager::class.java)
+        foldable = isFoldable(this)
         startInForeground()
         lastFolded = readFolded()
         if (lastFolded == true) rememberCoverSize()
@@ -163,11 +169,17 @@ class FoldSyncService : Service() {
         return START_STICKY
     }
 
+    private fun foldSyncOn(): Boolean = foldable && foldPreferences.current.foldSyncEnabled
+
+    /** False while media is playing, unless the user turned off waiting for media on fold. */
+    private fun foldMediaAllows(): Boolean =
+        !foldPreferences.current.foldWaitForMedia || !quietChangeGate.isMediaPlaying()
+
     /** Screen went off or playback stopped: run anything that was waiting for quiet. */
     private suspend fun onQuietMoment() {
         quietChangeGate.evaluate()
         val folded = lastFolded ?: return
-        if (foldSyncWaiting && quietChangeGate.mediaAllows()) {
+        if (foldSyncWaiting && foldSyncOn() && foldMediaAllows()) {
             foldSyncWaiting = false
             syncActivePanel(folded)
         }
@@ -177,6 +189,7 @@ class FoldSyncService : Service() {
         val folded = readFolded() ?: return
         if (folded == lastFolded) return
         lastFolded = folded
+        if (!foldSyncOn()) return
         pendingSync?.cancel()
         if (folded) prerenderJob?.cancel() // cover is active now; use whatever is cached
         pendingSync = scope.launch {
@@ -184,7 +197,7 @@ class FoldSyncService : Service() {
             delay(SETTLE_DELAY_MS)
             if (readFolded() != folded) return@launch
             if (folded) rememberCoverSize()
-            if (!quietChangeGate.mediaAllows()) {
+            if (!foldMediaAllows()) {
                 // Don't recolor under a playing video; catch up when it stops or screen turns off.
                 foldSyncWaiting = true
                 return@launch
@@ -197,6 +210,7 @@ class FoldSyncService : Service() {
     private suspend fun syncActivePanel(folded: Boolean) {
         wallpaperChangeLock.mutex.withLock {
             try {
+                if (!foldSyncOn()) return
                 if (settingsRepository.getWallpaperMode() != WallpaperMode.STATIC) return
                 val settings = settingsRepository.getScheduleSettings()
                 if (!settings.enableChanger || !settings.hasRequiredAlbums(WallpaperMode.STATIC)) return
@@ -245,6 +259,10 @@ class FoldSyncService : Service() {
      * time so folding is near-instant.
      */
     private suspend fun maybePrerenderCover() {
+        if (!foldSyncOn() || !foldPreferences.current.prerenderCover) {
+            coverCache = null
+            return
+        }
         if (lastFolded != false) return
         val coverSize = storedCoverSize() ?: return
         val signature = currentSignature() ?: return
@@ -401,11 +419,11 @@ class FoldSyncService : Service() {
             context.packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE)
 
         /**
-         * Starts the service on foldables. Safe to call repeatedly. Must be called while the app
+         * Starts the service (fold sync on foldables, quiet-change events everywhere).
+         * Safe to call repeatedly. Must be called while the app
          * is allowed to start foreground services (app visible, boot completed, or app updated).
          */
         fun start(context: Context) {
-            if (!isFoldable(context)) return
             try {
                 ContextCompat.startForegroundService(context, Intent(context, FoldSyncService::class.java))
             } catch (e: Exception) {

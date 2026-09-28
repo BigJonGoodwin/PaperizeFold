@@ -5,6 +5,9 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anthonyla.paperize.core.WallpaperMode
+import com.anthonyla.paperize.data.datastore.FoldPreferences
+import com.anthonyla.paperize.data.datastore.FoldSettings
+import com.anthonyla.paperize.service.quiet.QuietChangeGate
 import com.anthonyla.paperize.domain.model.AppSettings
 import com.anthonyla.paperize.domain.repository.AlbumRepository
 import com.anthonyla.paperize.domain.repository.SettingsRepository
@@ -23,7 +26,9 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val albumRepository: AlbumRepository,
-    private val wallpaperScheduler: WallpaperScheduler
+    private val wallpaperScheduler: WallpaperScheduler,
+    private val foldPreferences: FoldPreferences,
+    private val quietChangeGate: QuietChangeGate
 ) : ViewModel() {
 
     companion object {
@@ -43,6 +48,15 @@ class SettingsViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(Constants.FLOW_SUBSCRIPTION_TIMEOUT_MS),
             initialValue = WallpaperMode.STATIC
         )
+
+    /** PaperizeFold: fold sync and quiet-change settings. */
+    val foldSettings: StateFlow<FoldSettings> = foldPreferences.settings
+
+    fun updateFoldSettings(transform: (FoldSettings) -> FoldSettings) {
+        foldPreferences.update(transform)
+        // Loosening a rule may let a waiting change run right away.
+        quietChangeGate.evaluateAsync()
+    }
 
     fun updateDarkMode(enabled: Boolean) {
         viewModelScope.launch {

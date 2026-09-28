@@ -33,7 +33,7 @@ class SettingsViewModelTest {
         every { Log.e(any(), any(), any()) } returns 0
         every { settings.getAppSettingsFlow() } returns flowOf(AppSettings())
         every { settings.getWallpaperModeFlow() } returns flowOf(WallpaperMode.STATIC)
-        viewModel = SettingsViewModel(settings, albums, scheduler)
+        viewModel = SettingsViewModel(settings, albums, scheduler, mockk(relaxed = true), mockk(relaxed = true))
         store.put("settings", viewModel)
     }
 

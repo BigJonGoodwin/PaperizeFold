@@ -234,4 +234,21 @@
   <string name="fold_sync_channel_description" translatable="false">Keeps the cover and inner screen wallpapers matched. You can hide this notification.</string>
   <string name="fold_sync_notification_title" translatable="false">Fold sync active</string>
   <string name="fold_sync_notification_text" translatable="false">Matching wallpapers when you fold or unfold</string>
+  <string name="fold_settings_section" translatable="false">Foldable screens</string>
+  <string name="fold_sync_setting" translatable="false">Sync cover screen</string>
+  <string name="fold_sync_setting_desc" translatable="false">Show the current wallpaper on whichever screen you\'re using after you fold or unfold</string>
+  <string name="fold_prerender_setting" translatable="false">Fast fold</string>
+  <string name="fold_prerender_setting_desc" translatable="false">Prepare the cover wallpaper ahead of time so folding is near-instant</string>
+  <string name="fold_wait_media_setting" translatable="false">Wait for media when folding</string>
+  <string name="fold_wait_media_setting_desc" translatable="false">If something is playing, update the cover after it stops or the screen turns off</string>
+  <string name="quiet_settings_section" translatable="false">Quiet changes</string>
+  <string name="quiet_screen_off_setting" translatable="false">Change only when screen is off</string>
+  <string name="quiet_screen_off_setting_desc" translatable="false">Scheduled changes wait until the screen turns off, so the recolor happens out of sight</string>
+  <string name="quiet_media_setting" translatable="false">Wait for media to stop</string>
+  <string name="quiet_media_setting_desc" translatable="false">Scheduled changes and effect edits wait while music or video is playing</string>
+  <string name="quiet_media_wait_setting" translatable="false">Maximum wait for media</string>
+  <string name="quiet_media_wait_setting_desc" translatable="false">After this long, change anyway</string>
+  <string name="quiet_media_wait_value" translatable="false">%1$d min</string>
+  <string name="quiet_defer_effects_setting" translatable="false">Apply effects after leaving the app</string>
+  <string name="quiet_defer_effects_setting_desc" translatable="false">Collect effect and scaling edits and apply them once when you leave Paperize Fold</string>
 </resources>

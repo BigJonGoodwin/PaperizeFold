@@ -10,6 +10,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.WallpaperMode
+import com.anthonyla.paperize.data.datastore.FoldPreferences
 import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.service.WallpaperChangeLock
 import com.anthonyla.paperize.service.wallpaper.WallpaperController
@@ -36,7 +37,7 @@ import kotlinx.coroutines.sync.withLock
  * - Effect/scaling edits are collected and applied once, after you leave the app.
  * - Manual "change now" requests are never delayed.
  *
- * "Nothing is playing" can't wait forever: after [MAX_MEDIA_WAIT_MS] the change goes through
+ * "Nothing is playing" can't wait forever: after the user's wait limit the change goes through
  * anyway (with the screen off that's invisible, and background audio apps aren't reloaded).
  *
  * Events (screen off, playback stopped, app closed) come from FoldSyncService and the
@@ -47,7 +48,8 @@ class QuietChangeGate @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val wallpaperController: WallpaperController,
     private val settingsRepository: SettingsRepository,
-    private val wallpaperChangeLock: WallpaperChangeLock
+    private val wallpaperChangeLock: WallpaperChangeLock,
+    private val foldPreferences: FoldPreferences
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val evaluateMutex = Mutex()
@@ -76,13 +78,22 @@ class QuietChangeGate @Inject constructor(
     private fun isAppVisible(): Boolean =
         ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
 
+    private fun maxMediaWaitMs(): Long = foldPreferences.current.mediaWaitMinutes * 60_000L
+
     private fun waitedTooLong(): Boolean =
-        waitingSince != 0L && SystemClock.elapsedRealtime() - waitingSince >= MAX_MEDIA_WAIT_MS
+        waitingSince != 0L && SystemClock.elapsedRealtime() - waitingSince >= maxMediaWaitMs()
 
-    /** True when nothing is playing, or we've already waited as long as we're willing to. */
-    fun mediaAllows(): Boolean = !isMediaPlaying() || waitedTooLong()
+    /**
+     * True when nothing is playing, "wait for media" is off, or we've already waited as long as
+     * the user allows.
+     */
+    fun mediaAllows(): Boolean =
+        !foldPreferences.current.waitForMedia || !isMediaPlaying() || waitedTooLong()
 
-    private fun scheduledAllowed(): Boolean = !isScreenOn() && mediaAllows()
+    private fun scheduledAllowed(): Boolean {
+        val prefs = foldPreferences.current
+        return (!prefs.waitForScreenOff || !isScreenOn()) && mediaAllows()
+    }
 
     private fun effectsAllowed(): Boolean = !isAppVisible() && mediaAllows()
 
@@ -103,7 +114,7 @@ class QuietChangeGate @Inject constructor(
      * re-apply once after the app is closed). False means the caller should apply immediately.
      */
     fun requestEffectsReapply(): Boolean {
-        if (!active) return false
+        if (!active || !foldPreferences.current.deferEffects) return false
         pendingEffects = true
         markWaiting()
         evaluateAsync()
@@ -168,13 +179,12 @@ class QuietChangeGate @Inject constructor(
         if (capJob?.isActive == true) return
         capJob = scope.launch {
             // Re-check once the media wait cap has passed, in case no other event arrives.
-            delay(MAX_MEDIA_WAIT_MS + 1_000L)
+            delay(maxMediaWaitMs() + 1_000L)
             evaluate()
         }
     }
 
     companion object {
         private const val TAG = "QuietChangeGate"
-        const val MAX_MEDIA_WAIT_MS = 30L * 60L * 1000L
     }
 }

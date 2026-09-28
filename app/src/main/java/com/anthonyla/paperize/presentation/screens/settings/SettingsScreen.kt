@@ -25,11 +25,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.compose.material.icons.filled.DoNotDisturbOn
+import androidx.compose.material.icons.filled.PhoneAndroid
 import com.anthonyla.paperize.R
+import com.anthonyla.paperize.data.datastore.FoldSettings
+import com.anthonyla.paperize.service.fold.FoldSyncService
 import com.anthonyla.paperize.presentation.common.components.SettingSwitchItem
 import com.anthonyla.paperize.presentation.theme.AppSpacing
 import com.anthonyla.paperize.core.util.BatteryOptimizationUtil.isIgnoringBatteryOptimizations
 import com.anthonyla.paperize.core.util.BatteryOptimizationUtil.requestIgnoreBatteryOptimizations
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,9 +48,11 @@ fun SettingsScreen(
     val isResetting by viewModel.isResetting.collectAsStateWithLifecycle()
     val resetFailed by viewModel.resetFailed.collectAsStateWithLifecycle()
     val wallpaperMode by viewModel.wallpaperMode.collectAsStateWithLifecycle()
+    val foldSettings by viewModel.foldSettings.collectAsStateWithLifecycle()
     var showResetDialog by remember { mutableStateOf(false) }
     var pendingMode by remember { mutableStateOf<com.anthonyla.paperize.core.WallpaperMode?>(null) }
     val context = LocalContext.current
+    val isFoldable = remember { FoldSyncService.isFoldable(context) }
 
     var isIgnoringBatteryOptimizations by remember {
         mutableStateOf(isIgnoringBatteryOptimizations(context))
@@ -258,6 +265,95 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(AppSpacing.extraLarge))
 
+            // PaperizeFold settings
+            if (isFoldable) {
+                SectionHeader(
+                    icon = Icons.Filled.PhoneAndroid,
+                    title = stringResource(R.string.fold_settings_section)
+                )
+
+                Spacer(modifier = Modifier.height(AppSpacing.medium))
+
+                SettingSwitchItem(
+                    title = stringResource(R.string.fold_sync_setting),
+                    description = stringResource(R.string.fold_sync_setting_desc),
+                    checked = foldSettings.foldSyncEnabled,
+                    onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(foldSyncEnabled = on) } }
+                )
+
+                Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+
+                SettingSwitchItem(
+                    title = stringResource(R.string.fold_prerender_setting),
+                    description = stringResource(R.string.fold_prerender_setting_desc),
+                    checked = foldSettings.prerenderCover,
+                    enabled = foldSettings.foldSyncEnabled,
+                    onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(prerenderCover = on) } }
+                )
+
+                Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+
+                SettingSwitchItem(
+                    title = stringResource(R.string.fold_wait_media_setting),
+                    description = stringResource(R.string.fold_wait_media_setting_desc),
+                    checked = foldSettings.foldWaitForMedia,
+                    enabled = foldSettings.foldSyncEnabled,
+                    onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(foldWaitForMedia = on) } }
+                )
+
+                Spacer(modifier = Modifier.height(AppSpacing.extraLarge))
+            }
+
+            SectionHeader(
+                icon = Icons.Filled.DoNotDisturbOn,
+                title = stringResource(R.string.quiet_settings_section)
+            )
+
+            Spacer(modifier = Modifier.height(AppSpacing.medium))
+
+            SettingSwitchItem(
+                title = stringResource(R.string.quiet_screen_off_setting),
+                description = stringResource(R.string.quiet_screen_off_setting_desc),
+                checked = foldSettings.waitForScreenOff,
+                onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(waitForScreenOff = on) } }
+            )
+
+            Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+
+            SettingSwitchItem(
+                title = stringResource(R.string.quiet_media_setting),
+                description = stringResource(R.string.quiet_media_setting_desc),
+                checked = foldSettings.waitForMedia,
+                onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(waitForMedia = on) } }
+            )
+
+            if (foldSettings.waitForMedia) {
+                Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+
+                SettingSliderItem(
+                    title = stringResource(R.string.quiet_media_wait_setting),
+                    description = stringResource(R.string.quiet_media_wait_setting_desc),
+                    value = foldSettings.mediaWaitMinutes,
+                    valueRange = FoldSettings.MIN_MEDIA_WAIT_MINUTES..FoldSettings.MAX_MEDIA_WAIT_MINUTES,
+                    step = FoldSettings.MEDIA_WAIT_STEP_MINUTES,
+                    valueLabel = { stringResource(R.string.quiet_media_wait_value, it) },
+                    onValueChangeFinished = { minutes ->
+                        viewModel.updateFoldSettings { it.copy(mediaWaitMinutes = minutes) }
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+
+            SettingSwitchItem(
+                title = stringResource(R.string.quiet_defer_effects_setting),
+                description = stringResource(R.string.quiet_defer_effects_setting_desc),
+                checked = foldSettings.deferEffects,
+                onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(deferEffects = on) } }
+            )
+
+            Spacer(modifier = Modifier.height(AppSpacing.extraLarge))
+
             SectionHeader(
                 icon = Icons.Filled.Info,
                 title = stringResource(R.string.about)
@@ -376,6 +472,73 @@ fun SettingsScreen(
                         Text(stringResource(R.string.cancel))
                     }
                 }
+            )
+        }
+    }
+}
+
+/** PaperizeFold: slider card styled like the app's switch and effect cards. */
+@Composable
+private fun SettingSliderItem(
+    title: String,
+    description: String,
+    value: Int,
+    valueRange: IntRange,
+    step: Int,
+    valueLabel: @Composable (Int) -> String,
+    onValueChangeFinished: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var sliderValue by remember(value) { mutableFloatStateOf(value.toFloat()) }
+    val stepCount = ((valueRange.last - valueRange.first) / step - 1).coerceAtLeast(0)
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(PaddingValues(horizontal = AppSpacing.small, vertical = AppSpacing.extraSmall)),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(modifier = Modifier.padding(AppSpacing.large)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = valueLabel(sliderValue.roundToInt()),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = AppSpacing.medium)
+                )
+            }
+            Slider(
+                value = sliderValue,
+                onValueChange = { sliderValue = it },
+                onValueChangeFinished = { onValueChangeFinished(sliderValue.roundToInt()) },
+                valueRange = valueRange.first.toFloat()..valueRange.last.toFloat(),
+                steps = stepCount
             )
         }
     }
