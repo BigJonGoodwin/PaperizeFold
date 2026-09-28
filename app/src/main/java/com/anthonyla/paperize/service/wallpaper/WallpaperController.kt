@@ -12,6 +12,7 @@ import com.anthonyla.paperize.core.util.setBitmapChecked
 import com.anthonyla.paperize.domain.model.PreparedWallpaper
 import com.anthonyla.paperize.domain.model.ScheduleSettings
 import com.anthonyla.paperize.domain.repository.SettingsRepository
+import com.anthonyla.paperize.domain.repository.WallpaperRepository
 import com.anthonyla.paperize.domain.usecase.ChangeWallpaperUseCase
 import com.anthonyla.paperize.domain.usecase.ReapplyEffectsUseCase
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +20,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import javax.inject.Inject
 
 data class WallpaperChangeOutcome(val changed: Boolean = false, val emptyAlbum: Boolean = false)
@@ -29,7 +33,8 @@ class WallpaperController @Inject constructor(
     private val wallpaperManager: WallpaperManager,
     private val prepare: ChangeWallpaperUseCase,
     private val render: ReapplyEffectsUseCase,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val wallpaperRepository: WallpaperRepository
 ) {
     suspend fun change(screen: ScreenType, settings: ScheduleSettings): WallpaperChangeOutcome = when (screen) {
         ScreenType.LIVE -> {
@@ -122,10 +127,9 @@ class WallpaperController @Inject constructor(
     ): WallpaperChangeOutcome {
         if (screen == ScreenType.LIVE) return WallpaperChangeOutcome()
         var outcome = WallpaperChangeOutcome()
-        for (target in screen.staticScreens()) {
-            val albumId = if (target == ScreenType.HOME) settings.homeAlbumId else settings.lockAlbumId
-            if (albumId == null) continue
-            val bitmap = render(albumId, target, targetSize = targetSize).getOrNull()
+        for (target in reapplyTargets(screen, settings)) {
+            val albumId = albumFor(target, settings) ?: continue
+            val bitmap = render(albumId, target.renderScreen(), targetSize = targetSize).getOrNull()
             if (bitmap == null && !advanceIfMissing) continue
             val result = if (bitmap == null) changeSelected(albumId, target) else {
                 applyBitmap(bitmap, target)
@@ -135,6 +139,65 @@ class WallpaperController @Inject constructor(
         }
         return outcome
     }
+
+    /**
+     * PaperizeFold: render the current wallpaper(s) ahead of time and keep them as encoded PNGs,
+     * so a later [applyEncoded] only has to hand bytes to Android (no decode, effects, or encode).
+     */
+    suspend fun renderEncoded(
+        screen: ScreenType,
+        settings: ScheduleSettings,
+        targetSize: Size?
+    ): List<Pair<ScreenType, ByteArray>> {
+        if (screen == ScreenType.LIVE) return emptyList()
+        val encoded = mutableListOf<Pair<ScreenType, ByteArray>>()
+        for (target in reapplyTargets(screen, settings)) {
+            val albumId = albumFor(target, settings) ?: continue
+            val bitmap = render(albumId, target.renderScreen(), targetSize = targetSize).getOrNull() ?: continue
+            try {
+                currentCoroutineContext().ensureActive()
+                val bytes = ByteArrayOutputStream().use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    out.toByteArray()
+                }
+                encoded += target to bytes
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        return encoded
+    }
+
+    /** PaperizeFold: apply output of [renderEncoded]. Call while holding WallpaperChangeLock. */
+    fun applyEncoded(encoded: List<Pair<ScreenType, ByteArray>>) {
+        for ((target, bytes) in encoded) {
+            val id = ByteArrayInputStream(bytes).use { stream ->
+                wallpaperManager.setStream(stream, null, true, target.flags())
+            }
+            if (id == 0) throw IOException("WallpaperManager rejected the wallpaper")
+        }
+    }
+
+    /**
+     * PaperizeFold: BOTH collapses into a single wallpaper write when home and lock would get the
+     * identical image and presentation. One write means one "wallpaper changed" broadcast, so
+     * apps like ColorBlendr recolor once instead of twice.
+     */
+    private suspend fun reapplyTargets(screen: ScreenType, settings: ScheduleSettings): List<ScreenType> {
+        if (screen != ScreenType.BOTH) return listOf(screen)
+        val albumId = settings.homeAlbumId
+        if (albumId != null && albumId == settings.lockAlbumId && settings.sameStaticPresentation()) {
+            val homeId = wallpaperRepository.getCurrentWallpaper(albumId, ScreenType.HOME)?.id
+            val lockId = wallpaperRepository.getCurrentWallpaper(albumId, ScreenType.LOCK)?.id
+            if (homeId != null && homeId == lockId) return listOf(ScreenType.BOTH)
+        }
+        return listOf(ScreenType.HOME, ScreenType.LOCK)
+    }
+
+    private fun albumFor(target: ScreenType, settings: ScheduleSettings): String? =
+        if (target == ScreenType.LOCK) settings.lockAlbumId else settings.homeAlbumId
+
+    private fun ScreenType.renderScreen() = if (this == ScreenType.BOTH) ScreenType.HOME else this
 
     private suspend fun applyBitmap(bitmap: Bitmap, screen: ScreenType, onApplied: suspend () -> Unit = {}) {
         try {

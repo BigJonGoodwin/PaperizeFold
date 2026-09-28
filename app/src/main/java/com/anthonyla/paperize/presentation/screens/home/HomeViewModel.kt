@@ -43,7 +43,8 @@ class HomeViewModel @Inject constructor(
     private val createAlbumUseCase: CreateAlbumUseCase,
     private val settingsRepository: SettingsRepository,
     private val wallpaperScheduler: WallpaperScheduler,
-    private val wallpaperRepository: com.anthonyla.paperize.domain.repository.WallpaperRepository
+    private val wallpaperRepository: com.anthonyla.paperize.domain.repository.WallpaperRepository,
+    private val quietChangeGate: com.anthonyla.paperize.service.quiet.QuietChangeGate
 ) : ViewModel() {
 
     companion object {
@@ -230,7 +231,11 @@ class HomeViewModel @Inject constructor(
                 wallpaperScheduler.updateSchedules(validated, mode)
             }
             if (validated.enableChanger && validated.hasRequiredAlbums(mode) && displayChanged && mode == WallpaperMode.STATIC) {
-                validated.activeScreens(mode).forEach(::reapplyEffectsNow)
+                // PaperizeFold: collect effect edits and apply them once after leaving the app,
+                // instead of re-setting the wallpaper (and recoloring) for every slider change.
+                if (!quietChangeGate.requestEffectsReapply()) {
+                    validated.activeScreens(mode).forEach(::reapplyEffectsNow)
+                }
             }
         }
     }

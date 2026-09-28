@@ -24,7 +24,7 @@ class WallpaperControllerTest {
     private val prepare = mockk<ChangeWallpaperUseCase>(relaxed = true)
     private val render = mockk<ReapplyEffectsUseCase>()
     private val settingsRepository = mockk<SettingsRepository>(relaxed = true)
-    private val controller = WallpaperController(mockk<Context>(), manager, prepare, render, settingsRepository)
+    private val controller = WallpaperController(mockk<Context>(), manager, prepare, render, settingsRepository, mockk(relaxed = true))
     private val settings = ScheduleSettings(homeAlbumId = "album", lockAlbumId = "album")
     private val bitmap = mockk<Bitmap>(relaxed = true)
     private val prepared = PreparedWallpaper(bitmap, "album", ScreenType.HOME, "image", false)

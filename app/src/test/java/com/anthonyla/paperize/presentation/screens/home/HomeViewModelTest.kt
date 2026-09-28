@@ -50,7 +50,7 @@ class HomeViewModelTest {
             stored.value
         }
         every { wallpapers.getCurrentWallpaperFlow(any(), any()) } returns flowOf(null)
-        viewModel = HomeViewModel(mockk<Context>(), albums, mockk(), settings, scheduler, wallpapers)
+        viewModel = HomeViewModel(mockk<Context>(), albums, mockk(), settings, scheduler, wallpapers, mockk(relaxed = true))
         store.put("home", viewModel)
     }
 

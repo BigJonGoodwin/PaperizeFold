@@ -11,6 +11,7 @@ import androidx.work.Configuration
 import com.anthonyla.paperize.core.constants.Constants
 import com.anthonyla.paperize.core.util.DataResetManager
 import com.anthonyla.paperize.service.fold.FoldSyncService
+import com.anthonyla.paperize.service.quiet.QuietChangeGate
 import com.anthonyla.paperize.service.worker.AlbumRefreshScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -20,6 +21,9 @@ class PaperizeApplication : Application(), Configuration.Provider, DefaultLifecy
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
+
+    @Inject
+    lateinit var quietChangeGate: QuietChangeGate
 
     override fun onCreate() {
         super<Application>.onCreate()
@@ -58,5 +62,10 @@ class PaperizeApplication : Application(), Configuration.Provider, DefaultLifecy
         AlbumRefreshScheduler.enqueue(this)
         // PaperizeFold: the app is visible here, so starting the foreground service is allowed.
         FoldSyncService.start(this)
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        // PaperizeFold: effect edits made in the app are applied now that it's closed.
+        quietChangeGate.evaluateAsync()
     }
 }

@@ -13,6 +13,8 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Point
 import android.hardware.display.DisplayManager
+import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -23,6 +25,7 @@ import android.util.Size
 import android.view.Display
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import com.anthonyla.paperize.R
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.WallpaperMode
@@ -31,8 +34,10 @@ import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.domain.repository.WallpaperRepository
 import com.anthonyla.paperize.presentation.MainActivity
 import com.anthonyla.paperize.service.WallpaperChangeLock
+import com.anthonyla.paperize.service.quiet.QuietChangeGate
 import com.anthonyla.paperize.service.wallpaper.WallpaperController
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -45,15 +50,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 
 /**
- * PaperizeFold: keeps the cover and inner screens of a foldable showing the same wallpaper.
+ * PaperizeFold: keeps the cover and inner screens of a foldable showing the same wallpaper,
+ * and feeds screen/media events to [QuietChangeGate] so wallpaper changes happen quietly.
  *
  * Samsung foldables apply a static wallpaper only to the panel that is active when it is set.
  * This service watches for fold/unfold and re-applies Paperize's *current* wallpaper to the
- * panel that just became active, rendered at that panel's size. It never advances the rotation.
+ * panel that just became active, sized for that panel. It never advances the rotation.
  *
- * It only acts when a panel is actually out of date: every time the wallpaper changes, the
- * active panel is recorded as showing that version, so unfolding to an already-current screen
- * does nothing (no redundant wallpaper change, no extra Material You recolor).
+ * - Panels that are already current are skipped (no redundant change, no extra recolor).
+ * - While the phone is open, the cover version is pre-rendered in the background, so folding
+ *   only has to hand finished image bytes to Android.
+ * - If media is playing when you fold, the sync waits until playback stops or the screen
+ *   turns off, so videos aren't interrupted by a recolor.
  */
 @AndroidEntryPoint
 class FoldSyncService : Service() {
@@ -62,18 +70,31 @@ class FoldSyncService : Service() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var wallpaperRepository: WallpaperRepository
     @Inject lateinit var wallpaperChangeLock: WallpaperChangeLock
+    @Inject lateinit var quietChangeGate: QuietChangeGate
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var displayManager: DisplayManager
+    private var audioManager: AudioManager? = null
 
-    /** Last observed fold state; null until the first read. Main thread only. */
-    private var lastFolded: Boolean? = null
+    /** Last observed fold state; null until the first read. Written on the main thread. */
+    @Volatile private var lastFolded: Boolean? = null
     private var pendingSync: Job? = null
     private var pendingRecord: Job? = null
+    private var prerenderJob: Job? = null
+
+    /** A fold/unfold happened while media was playing; sync once it's quiet. */
+    @Volatile private var foldSyncWaiting = false
 
     /** What each panel (key = folded?) currently shows, as a [signature]. */
-    private val panelShows = java.util.concurrent.ConcurrentHashMap<Boolean, String>()
+    private val panelShows = ConcurrentHashMap<Boolean, String>()
+
+    /** Ready-to-apply cover wallpaper(s), rendered while the phone was open. */
+    private class CoverCache(val signature: String, val size: Size, val encoded: List<Pair<ScreenType, ByteArray>>)
+    @Volatile private var coverCache: CoverCache? = null
+
+    /** Our own re-syncs record their panel directly; ignore their broadcasts until this time. */
+    @Volatile private var ignoreBroadcastsUntil = 0L
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
@@ -82,9 +103,6 @@ class FoldSyncService : Service() {
             if (displayId == Display.DEFAULT_DISPLAY) checkFoldState()
         }
     }
-
-    /** Our own re-syncs record their panel directly; ignore their broadcasts until this time. */
-    @Volatile private var ignoreBroadcastsUntil = 0L
 
     private val wallpaperChangedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -96,7 +114,20 @@ class FoldSyncService : Service() {
             pendingRecord = scope.launch {
                 delay(RECORD_DELAY_MS)
                 currentSignature()?.let { panelShows[folded] = it }
+                maybePrerenderCover()
             }
+        }
+    }
+
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            scope.launch { onQuietMoment() }
+        }
+    }
+
+    private val playbackCallback = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+            if (!quietChangeGate.isMediaPlaying()) scope.launch { onQuietMoment() }
         }
     }
 
@@ -104,8 +135,10 @@ class FoldSyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         displayManager = getSystemService(DisplayManager::class.java)
+        audioManager = getSystemService(AudioManager::class.java)
         startInForeground()
         lastFolded = readFolded()
+        if (lastFolded == true) rememberCoverSize()
         displayManager.registerDisplayListener(displayListener, mainHandler)
         // System broadcasts are delivered to NOT_EXPORTED receivers too.
         ContextCompat.registerReceiver(
@@ -114,6 +147,14 @@ class FoldSyncService : Service() {
             IntentFilter(Intent.ACTION_WALLPAPER_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        ContextCompat.registerReceiver(
+            this,
+            screenOffReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        audioManager?.registerAudioPlaybackCallback(playbackCallback, mainHandler)
+        quietChangeGate.active = true
         Log.d(TAG, "Fold sync started, folded=$lastFolded")
     }
 
@@ -122,15 +163,33 @@ class FoldSyncService : Service() {
         return START_STICKY
     }
 
+    /** Screen went off or playback stopped: run anything that was waiting for quiet. */
+    private suspend fun onQuietMoment() {
+        quietChangeGate.evaluate()
+        val folded = lastFolded ?: return
+        if (foldSyncWaiting && quietChangeGate.mediaAllows()) {
+            foldSyncWaiting = false
+            syncActivePanel(folded)
+        }
+    }
+
     private fun checkFoldState() {
         val folded = readFolded() ?: return
         if (folded == lastFolded) return
         lastFolded = folded
         pendingSync?.cancel()
+        if (folded) prerenderJob?.cancel() // cover is active now; use whatever is cached
         pendingSync = scope.launch {
-            // Let the panel switch and launcher settle before drawing for the new size.
+            // Give the panel switch a moment to finish before drawing for the new size.
             delay(SETTLE_DELAY_MS)
             if (readFolded() != folded) return@launch
+            if (folded) rememberCoverSize()
+            if (!quietChangeGate.mediaAllows()) {
+                // Don't recolor under a playing video; catch up when it stops or screen turns off.
+                foldSyncWaiting = true
+                return@launch
+            }
+            foldSyncWaiting = false
             syncActivePanel(folded)
         }
     }
@@ -148,26 +207,68 @@ class FoldSyncService : Service() {
                     return
                 }
 
-                val targetSize = if (folded) readPanelSize() else null
+                val panelSize = if (folded) readPanelSize() else null
+                val cached = coverCache
                 ignoreBroadcastsUntil = Long.MAX_VALUE
                 try {
-                    for (screen in settings.activeScreens(WallpaperMode.STATIC)) {
-                        wallpaperController.reapply(
-                            screen = screen,
-                            settings = settings,
-                            targetSize = targetSize,
-                            advanceIfMissing = false
-                        )
+                    if (folded && cached != null && cached.signature == signature && cached.size == panelSize) {
+                        // Fast path: already rendered and encoded while the phone was open.
+                        wallpaperController.applyEncoded(cached.encoded)
+                        Log.d(TAG, "Applied pre-rendered cover wallpaper")
+                    } else {
+                        for (screen in settings.activeScreens(WallpaperMode.STATIC)) {
+                            wallpaperController.reapply(
+                                screen = screen,
+                                settings = settings,
+                                targetSize = panelSize,
+                                advanceIfMissing = false
+                            )
+                        }
                     }
                 } finally {
                     ignoreBroadcastsUntil = SystemClock.elapsedRealtime() + OWN_BROADCAST_GRACE_MS
                 }
+                if (folded) coverCache = null
                 panelShows[folded] = signature
-                Log.d(TAG, "Synced wallpaper to panel folded=$folded size=$targetSize")
+                Log.d(TAG, "Synced wallpaper to panel folded=$folded size=$panelSize")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Fold sync failed", e)
+            }
+        }
+        maybePrerenderCover()
+    }
+
+    /**
+     * While the phone is open and the cover is out of date, render the cover version ahead of
+     * time so folding is near-instant.
+     */
+    private suspend fun maybePrerenderCover() {
+        if (lastFolded != false) return
+        val coverSize = storedCoverSize() ?: return
+        val signature = currentSignature() ?: return
+        if (panelShows[true] == signature) return
+        val cached = coverCache
+        if (cached != null && cached.signature == signature && cached.size == coverSize) return
+
+        prerenderJob?.cancel()
+        prerenderJob = scope.launch {
+            delay(PRERENDER_DELAY_MS)
+            try {
+                val settings = settingsRepository.getScheduleSettings()
+                if (signature(settings) != signature) return@launch
+                val encoded = settings.activeScreens(WallpaperMode.STATIC).flatMap { screen ->
+                    wallpaperController.renderEncoded(screen, settings, coverSize)
+                }
+                if (encoded.isNotEmpty() && lastFolded == false) {
+                    coverCache = CoverCache(signature, coverSize, encoded)
+                    Log.d(TAG, "Pre-rendered cover wallpaper (${encoded.sumOf { it.second.size } / 1024} KB)")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Cover pre-render failed", e)
             }
         }
     }
@@ -214,6 +315,22 @@ class FoldSyncService : Service() {
         return size.height.toFloat() / size.width >= FOLDED_ASPECT_THRESHOLD
     }
 
+    private fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun rememberCoverSize() {
+        val size = readPanelSize() ?: return
+        prefs().edit {
+            putInt(KEY_COVER_WIDTH, size.width)
+            putInt(KEY_COVER_HEIGHT, size.height)
+        }
+    }
+
+    private fun storedCoverSize(): Size? {
+        val width = prefs().getInt(KEY_COVER_WIDTH, 0)
+        val height = prefs().getInt(KEY_COVER_HEIGHT, 0)
+        return if (width > 0 && height > 0) Size(width, height) else null
+    }
+
     private fun startInForeground() {
         val notification = createNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -257,8 +374,11 @@ class FoldSyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        quietChangeGate.active = false
         displayManager.unregisterDisplayListener(displayListener)
+        audioManager?.unregisterAudioPlaybackCallback(playbackCallback)
         runCatching { unregisterReceiver(wallpaperChangedReceiver) }
+        runCatching { unregisterReceiver(screenOffReceiver) }
         scope.cancel()
         super.onDestroy()
     }
@@ -267,10 +387,14 @@ class FoldSyncService : Service() {
         private const val TAG = "FoldSyncService"
         private const val CHANNEL_ID = "paperize_fold_sync"
         private const val NOTIFICATION_ID = 4201
-        private const val SETTLE_DELAY_MS = 800L
+        private const val SETTLE_DELAY_MS = 350L
         private const val RECORD_DELAY_MS = 500L
+        private const val PRERENDER_DELAY_MS = 3_000L
         private const val OWN_BROADCAST_GRACE_MS = 2_000L
         private const val FOLDED_ASPECT_THRESHOLD = 1.8f
+        private const val PREFS_NAME = "paperize_fold"
+        private const val KEY_COVER_WIDTH = "cover_width"
+        private const val KEY_COVER_HEIGHT = "cover_height"
 
         /** True on devices with a hinge sensor (foldables). */
         fun isFoldable(context: Context): Boolean =
