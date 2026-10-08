@@ -41,14 +41,15 @@ class WallpaperController @Inject constructor(
 ) {
     /**
      * PaperizeFold: one public operation. [panel] is the foldable screen it renders for (null on
-     * regular phones); [written] collects the home/lock slots Android actually accepted, which are
-     * reported to [PanelTracker] when the operation ends.
+     * regular phones); [written] collects the home/lock slots Android actually accepted and the
+     * image written to each (null: the slot's current image), reported to [PanelTracker] when the
+     * operation ends.
      */
     private class Op(val panel: FoldPanel?) {
-        val written = mutableSetOf<ScreenType>()
+        val written = linkedMapOf<ScreenType, String?>()
         val presentationPanel: FoldPanel get() = panel ?: FoldPanel.MAIN
-        fun wrote(screen: ScreenType) {
-            written += screen.staticSlots()
+        fun wrote(screen: ScreenType, wallpaperId: String? = null) {
+            for (slot in screen.staticSlots()) written[slot] = wallpaperId
         }
     }
 
@@ -100,7 +101,7 @@ class WallpaperController @Inject constructor(
         } else {
             applyPrepared(op, prepared, ScreenType.HOME)
             val lockBitmap = render(albumId, ScreenType.LOCK, prepared.wallpaperId, op.panel).getOrThrow()
-            applyBitmap(op, lockBitmap, ScreenType.LOCK) { prepare.complete(prepared, ScreenType.LOCK) }
+            applyBitmap(op, lockBitmap, ScreenType.LOCK, prepared.wallpaperId) { prepare.complete(prepared, ScreenType.LOCK) }
         }
         return WallpaperChangeOutcome(changed = true)
     }
@@ -120,7 +121,7 @@ class WallpaperController @Inject constructor(
             currentCoroutineContext().ensureActive()
             wallpaperManager.setBitmapChecked(prepared.bitmap, screen.flags())
             accepted = true
-            op.wrote(screen)
+            op.wrote(screen, prepared.wallpaperId)
             // Once Android accepts the bitmap, cancellation must not leave our current item stale.
             withContext(NonCancellable) {
                 screen.staticScreens().forEach { prepare.complete(prepared, it) }
@@ -141,7 +142,7 @@ class WallpaperController @Inject constructor(
             for (target in targets) {
                 val renderScreen = if (target == ScreenType.BOTH) ScreenType.HOME else target
                 val bitmap = render(albumId, renderScreen, wallpaperId, op.panel).getOrThrow()
-                applyBitmap(op, bitmap, target) {
+                applyBitmap(op, bitmap, target, wallpaperId) {
                     target.staticScreens().forEach {
                         prepare.completeSpecific(albumId, it, wallpaperId, settings.shuffleEnabled)
                     }
@@ -241,11 +242,17 @@ class WallpaperController @Inject constructor(
 
     private fun ScreenType.renderScreen() = if (this == ScreenType.BOTH) ScreenType.HOME else this
 
-    private suspend fun applyBitmap(op: Op, bitmap: Bitmap, screen: ScreenType, onApplied: suspend () -> Unit = {}) {
+    private suspend fun applyBitmap(
+        op: Op,
+        bitmap: Bitmap,
+        screen: ScreenType,
+        wallpaperId: String? = null,
+        onApplied: suspend () -> Unit = {}
+    ) {
         try {
             currentCoroutineContext().ensureActive()
             wallpaperManager.setBitmapChecked(bitmap, screen.flags())
-            op.wrote(screen)
+            op.wrote(screen, wallpaperId)
             withContext(NonCancellable) { onApplied() }
         } finally {
             bitmap.recycle()

@@ -1,5 +1,6 @@
 package com.anthonyla.paperize.service.fold
 
+import android.app.WallpaperManager
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
@@ -32,7 +33,8 @@ class PanelTracker @Inject constructor(
     @param:ApplicationContext context: Context,
     private val foldState: FoldState,
     private val settingsRepository: SettingsRepository,
-    private val wallpaperRepository: WallpaperRepository
+    private val wallpaperRepository: WallpaperRepository,
+    private val wallpaperManager: WallpaperManager
 ) {
     /** A write in progress: the screen in use when it began. */
     class Ticket internal constructor(val panel: FoldPanel?, internal val startedAt: Long)
@@ -55,11 +57,13 @@ class PanelTracker @Inject constructor(
     }
 
     /**
-     * Call after the write finished (also when it failed), with the slots that were actually
-     * written. Must not be cancelled.
+     * Call after the write finished (also when it failed). [written] maps each slot Android
+     * accepted to the image written there; null means "the slot's current image". Must not be
+     * cancelled.
      */
-    suspend fun end(ticket: Ticket?, written: Set<ScreenType>) {
+    suspend fun end(ticket: Ticket?, written: Map<ScreenType, String?>) {
         if (ticket == null) return
+        var credited = false
         try {
             if (written.isEmpty()) return
             val panel = FoldSyncPolicy.attributedPanel(
@@ -74,14 +78,24 @@ class PanelTracker @Inject constructor(
                 onUncertainWrite?.invoke()
                 return
             }
-            val expected = expectedSignatures(panel, settingsRepository.getScheduleSettings())
+            val settings = settingsRepository.getScheduleSettings()
+            val currentIds = currentIds(settings)
+            val systemIds = readSystemIds()
             prefs.edit {
-                for (slot in written) {
-                    val signature = expected[slot]
-                    if (signature != null) putString(key(panel, slot), signature) else remove(key(panel, slot))
+                for ((slot, writtenId) in written) {
+                    val currentId = currentIds[slot]
+                    // A specific image from outside the slot's album isn't "current"; leave the
+                    // slot unknown so it gets the current image the next time it's checked.
+                    if (currentId != null && (writtenId == null || writtenId == currentId)) {
+                        putString(key(panel, slot), FoldSyncPolicy.slotSignature(currentId, settings.lookKey(slot, panel)))
+                    } else {
+                        remove(key(panel, slot))
+                    }
                 }
+                if (systemIds != null) putString(idsKey(panel), systemIds) else remove(idsKey(panel))
             }
-            Log.d(TAG, "Recorded $written on $panel")
+            credited = true
+            Log.d(TAG, "Recorded ${written.keys} on $panel")
         } catch (e: CancellationException) {
             forgetAll()
             throw e
@@ -91,6 +105,12 @@ class PanelTracker @Inject constructor(
         } finally {
             lastWriteEndedAt = SystemClock.elapsedRealtime()
             writesInFlight.decrementAndGet()
+            // A fold noticed while the record was being written raced the write.
+            if (credited && foldState.lastTransitionAt > ticket.startedAt - FoldSyncPolicy.SETTLE_MS) {
+                Log.i(TAG, "Folded while a wallpaper write was being recorded; both screens will be re-checked")
+                forgetAll()
+                onUncertainWrite?.invoke()
+            }
         }
     }
 
@@ -103,49 +123,76 @@ class PanelTracker @Inject constructor(
         }
     }
 
-    /** Whether a wallpaper-changed broadcast received at [broadcastAt] came from another app. */
-    fun isExternalChange(broadcastAt: Long): Boolean = FoldSyncPolicy.isExternalChange(
-        broadcastAt = broadcastAt,
-        writesInFlight = writesInFlight.get() > 0,
-        lastWriteStartedAt = lastWriteStartedAt,
-        lastWriteEndedAt = lastWriteEndedAt,
-        lastTransitionAt = foldState.lastTransitionAt
-    )
+    /**
+     * Whether a wallpaper-changed broadcast received at [broadcastAt] came from another app, and
+     * so changed [panel]. Our own writes and the system swapping screens are not external, and
+     * neither is a broadcast after which the system still reports the wallpaper we last wrote.
+     */
+    fun isExternalChange(broadcastAt: Long, panel: FoldPanel): Boolean {
+        val byTiming = FoldSyncPolicy.isExternalChange(
+            broadcastAt = broadcastAt,
+            writesInFlight = writesInFlight.get() > 0,
+            lastWriteStartedAt = lastWriteStartedAt,
+            lastWriteEndedAt = lastWriteEndedAt,
+            lastTransitionAt = foldState.lastTransitionAt
+        )
+        if (!byTiming) return false
+        val known = prefs.getString(idsKey(panel), null) ?: return true
+        return readSystemIds() != known
+    }
 
     /** What each active slot on [panel] should show now. Empty when nothing is managed. */
-    suspend fun expectedSignatures(panel: FoldPanel, settings: ScheduleSettings): Map<ScreenType, String> {
+    suspend fun expectedSignatures(panel: FoldPanel, settings: ScheduleSettings): Map<ScreenType, String> =
+        currentIds(settings).mapValues { (slot, id) -> FoldSyncPolicy.slotSignature(id, settings.lookKey(slot, panel)) }
+
+    /** The current image of each active static slot (from that slot's album). */
+    private suspend fun currentIds(settings: ScheduleSettings): Map<ScreenType, String> {
         if (settingsRepository.getWallpaperMode() != WallpaperMode.STATIC) return emptyMap()
         val screens = settings.activeScreens(WallpaperMode.STATIC)
         val both = ScreenType.BOTH in screens
-        val expected = LinkedHashMap<ScreenType, String>()
+        val ids = LinkedHashMap<ScreenType, String>()
         if (both || ScreenType.HOME in screens) {
             settings.homeAlbumId
                 ?.let { wallpaperRepository.getCurrentWallpaper(it, ScreenType.HOME)?.id }
-                ?.let { expected[ScreenType.HOME] = FoldSyncPolicy.slotSignature(it, settings.lookKey(ScreenType.HOME, panel)) }
+                ?.let { ids[ScreenType.HOME] = it }
         }
         if (both || ScreenType.LOCK in screens) {
             settings.lockAlbumId
                 ?.let { wallpaperRepository.getCurrentWallpaper(it, ScreenType.LOCK)?.id }
-                ?.let { expected[ScreenType.LOCK] = FoldSyncPolicy.slotSignature(it, settings.lookKey(ScreenType.LOCK, panel)) }
+                ?.let { ids[ScreenType.LOCK] = it }
         }
-        return expected
+        return ids
     }
 
     /** Slots of [panel] that don't show what they should. */
     fun slotsNeedingWrite(panel: FoldPanel, expected: Map<ScreenType, String>): Set<ScreenType> =
         FoldSyncPolicy.slotsNeedingWrite(expected) { slot -> prefs.getString(key(panel, slot), null) }
 
-    /** Forget what both screens show; each is re-applied the next time it's checked. */
-    fun forgetAll() {
+    /** Forget what [panel] shows; it is re-applied the next time it's checked. */
+    fun forget(panel: FoldPanel) {
         prefs.edit {
-            for (panel in FoldPanel.entries) {
-                remove(key(panel, ScreenType.HOME))
-                remove(key(panel, ScreenType.LOCK))
-            }
+            remove(key(panel, ScreenType.HOME))
+            remove(key(panel, ScreenType.LOCK))
+            remove(idsKey(panel))
         }
     }
 
+    /** Forget what both screens show; each is re-applied the next time it's checked. */
+    fun forgetAll() {
+        FoldPanel.entries.forEach(::forget)
+    }
+
+    /** The system's wallpaper ids for home and lock, used to recognize our own last write. */
+    private fun readSystemIds(): String? = try {
+        "${wallpaperManager.getWallpaperId(WallpaperManager.FLAG_SYSTEM)}," +
+            "${wallpaperManager.getWallpaperId(WallpaperManager.FLAG_LOCK)}"
+    } catch (e: Exception) {
+        null
+    }
+
     private fun key(panel: FoldPanel, slot: ScreenType) = "shows_${panel.name}_${slot.name}"
+
+    private fun idsKey(panel: FoldPanel) = "system_ids_${panel.name}"
 
     private companion object {
         const val TAG = "PanelTracker"

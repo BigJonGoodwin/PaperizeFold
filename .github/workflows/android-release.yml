@@ -66,9 +66,54 @@ jobs:
           fi
 
       - name: Build release APK and run unit tests
+        shell: bash
         env:
           FOLD_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./gradlew assembleRelease testReleaseUnitTest --continue
+        run: |
+          ./gradlew assembleRelease test --continue 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+
+      # Turn compiler errors and test failures into annotations, so they can be read from the
+      # run summary (and the API) without downloading logs.
+      - name: Report build errors
+        if: failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+
+          lines = open("build.log", encoding="utf-8", errors="replace").read().splitlines()
+
+          def emit(title, chunk):
+              message = "\n".join(chunk)[:30000]
+              message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title={title}::{message}")
+
+          kotlin = [l for l in lines if re.match(r"^(e|w): ", l) and l.startswith("e: ")]
+          for i in range(0, min(len(kotlin), 125), 25):
+              emit(f"Kotlin errors {i + 1}+", kotlin[i:i + 25])
+
+          tests = []
+          for i, l in enumerate(lines):
+              if l.rstrip().endswith(" FAILED") and ">" in l:
+                  tests.extend(lines[i:i + 6])
+          if tests:
+              emit("Test failures", tests[:120])
+
+          wrong = []
+          capture = False
+          for l in lines:
+              if l.startswith("* What went wrong"):
+                  capture = True
+              elif l.startswith("* Try") or l.startswith("* Get more help"):
+                  capture = False
+              if capture:
+                  wrong.append(l)
+          if wrong:
+              emit("What went wrong", wrong[:150])
+
+          emit("Build log tail", lines[-60:])
+          PY
 
       - name: Upload test reports
         if: failure()

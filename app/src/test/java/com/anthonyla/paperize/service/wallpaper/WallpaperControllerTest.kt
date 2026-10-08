@@ -107,14 +107,21 @@ class WallpaperControllerTest {
         coEvery { prepare("album", ScreenType.HOME) } returns Result.Success(prepared)
         every { manager.setBitmap(bitmap, null, true, 3) } returns 1
         controller.change(ScreenType.BOTH, settings)
-        coVerify(exactly = 1) { tracker.end(null, setOf(ScreenType.HOME, ScreenType.LOCK)) }
+        coVerify(exactly = 1) { tracker.end(null, mapOf(ScreenType.HOME to "image", ScreenType.LOCK to "image")) }
     }
 
     @Test fun `rejected writes report nothing written to the fold tracker`() = runTest {
         coEvery { prepare("album", ScreenType.HOME) } returns Result.Success(prepared)
         every { manager.setBitmap(bitmap, null, true, 1) } returns 0
         try { controller.change(ScreenType.HOME, settings); fail("Expected rejection") } catch (_: IOException) { }
-        coVerify(exactly = 1) { tracker.end(null, emptySet()) }
+        coVerify(exactly = 1) { tracker.end(null, emptyMap()) }
+    }
+
+    @Test fun `reapplied current images are reported without a specific id`() = runTest {
+        coEvery { render("album", ScreenType.HOME, null) } returns Result.Success(bitmap)
+        every { manager.setBitmap(bitmap, null, true, 1) } returns 1
+        controller.reapply(ScreenType.HOME, settings)
+        coVerify(exactly = 1) { tracker.end(null, mapOf(ScreenType.HOME to null)) }
     }
 
     @Test fun `reapplying a readable current image does not consume the next item`() = runTest {

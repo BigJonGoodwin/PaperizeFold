@@ -13,6 +13,9 @@ import com.anthonyla.paperize.core.WallpaperMode
 import com.anthonyla.paperize.data.datastore.FoldPreferences
 import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.service.WallpaperChangeLock
+import com.anthonyla.paperize.service.fold.FoldState
+import com.anthonyla.paperize.service.fold.FoldSyncPolicy
+import com.anthonyla.paperize.service.fold.PanelTracker
 import com.anthonyla.paperize.service.wallpaper.WallpaperController
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.ConcurrentHashMap
@@ -49,7 +52,9 @@ class QuietChangeGate @Inject constructor(
     private val wallpaperController: WallpaperController,
     private val settingsRepository: SettingsRepository,
     private val wallpaperChangeLock: WallpaperChangeLock,
-    private val foldPreferences: FoldPreferences
+    private val foldPreferences: FoldPreferences,
+    private val foldState: FoldState,
+    private val panelTracker: PanelTracker
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val evaluateMutex = Mutex()
@@ -167,8 +172,19 @@ class QuietChangeGate @Inject constructor(
             if (mode != WallpaperMode.STATIC || !settings.enableChanger || !settings.hasRequiredAlbums(mode)) {
                 return@withLock
             }
-            for (screen in settings.activeScreens(mode)) {
-                wallpaperController.reapply(screen, settings)
+            val panel = foldState.activePanel()
+            if (panel == null) {
+                for (screen in settings.activeScreens(mode)) {
+                    wallpaperController.reapply(screen, settings)
+                }
+            } else {
+                // PaperizeFold: only what looks different on the screen in use. A fold sync may
+                // already have applied the new look, and edits to the other screen's look wait
+                // for the next fold.
+                val needed = panelTracker.slotsNeedingWrite(panel, panelTracker.expectedSignatures(panel, settings))
+                for (target in FoldSyncPolicy.writeTargets(needed)) {
+                    wallpaperController.reapply(target, settings, panel = panel)
+                }
             }
         }
         Log.d(TAG, "Applied pending effect changes")

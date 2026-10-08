@@ -19,6 +19,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -67,10 +69,16 @@ class FoldCoordinator @Inject constructor(
     @Volatile private var seenTransitionAt = 0L
 
     /**
-     * The screen in use should be checked: after a fold, after a write that may have landed on
-     * the other screen, or after starting. Stays set while media holds the check back.
+     * The screen in use should be checked now: after a fold, after a write that may have landed
+     * on the other screen, or when the user asks. Stays set while media holds the check back.
      */
     @Volatile private var syncPending = false
+
+    /** After starting, check the screen in use at the next screen-off (out of sight). */
+    @Volatile private var verifyWhenQuiet = false
+
+    /** A check was held back because media was playing; run it when playback stops. */
+    @Volatile private var heldForMedia = false
 
     /** The user asked to resync: ignore the media wait once. */
     @Volatile private var forceNext = false
@@ -93,7 +101,9 @@ class FoldCoordinator @Inject constructor(
                 try {
                     runCheck()
                 } catch (e: CancellationException) {
-                    throw e
+                    // Only stop when the scope itself is cancelled; otherwise keep serving checks.
+                    currentCoroutineContext().ensureActive()
+                    Log.w(TAG, "Fold check was cancelled", e)
                 } catch (e: Exception) {
                     Log.e(TAG, "Fold check failed", e)
                 }
@@ -118,7 +128,7 @@ class FoldCoordinator @Inject constructor(
         seenTransitionAt = foldState.lastTransitionAt
         // Anything that happened while we weren't watching is checked out of sight, at the next
         // screen-off, instead of re-applying a wallpaper while the app is being opened.
-        syncPending = true
+        verifyWhenQuiet = true
         synchronized(jobLock) {
             sessionJob?.cancel()
             sessionJob = scope.launch {
@@ -162,18 +172,21 @@ class FoldCoordinator @Inject constructor(
 
     fun onPlaybackChanged() {
         if (quietChangeGate.isMediaPlaying()) return
-        if (syncPending || quietChangeGate.hasPendingWork()) requestCheck(0L)
+        if (heldForMedia || quietChangeGate.hasPendingWork()) requestCheck(0L)
     }
 
-    /** Something wrote a wallpaper. If it wasn't us (or the system swapping screens), forget. */
+    /**
+     * Something wrote a wallpaper. If it was another app, the screen in use no longer shows
+     * Paperize's wallpaper; it gets it back the next time that screen is checked (after a fold).
+     */
     fun onWallpaperChanged() {
         val at = SystemClock.elapsedRealtime()
+        val panel = foldState.activePanel()
         scope.launch {
             delay(BROADCAST_CLASSIFY_DELAY_MS)
-            if (foldState.isFoldable && tracker.isExternalChange(at)) {
-                Log.i(TAG, "Wallpaper changed by another app; both screens will be re-checked")
-                tracker.forgetAll()
-                cache = null
+            if (panel != null && panel == foldState.activePanel() && tracker.isExternalChange(at, panel)) {
+                Log.i(TAG, "Wallpaper on the $panel screen was changed by another app")
+                tracker.forget(panel)
             }
             schedulePrerender()
         }
@@ -203,7 +216,8 @@ class FoldCoordinator @Inject constructor(
         awaitSettled()
         // Deferred scheduled changes first: they change what both screens should show.
         quietChangeGate.evaluate()
-        if (syncPending) syncActivePanel()
+        val verify = verifyWhenQuiet && !quietChangeGate.isScreenOn()
+        if (syncPending || verify || (heldForMedia && mediaAllows())) syncActivePanel()
         schedulePrerender()
     }
 
@@ -218,11 +232,19 @@ class FoldCoordinator @Inject constructor(
     private suspend fun syncActivePanel() {
         if (!syncOn()) {
             syncPending = false
+            verifyWhenQuiet = false
+            heldForMedia = false
+            forceNext = false
             return
         }
         // Don't recolor under a playing video; catch up when it stops or the screen turns off.
-        if (!forceNext && !mediaAllows()) return
+        if (!forceNext && !mediaAllows()) {
+            heldForMedia = true
+            return
+        }
         syncPending = false
+        verifyWhenQuiet = false
+        heldForMedia = false
         forceNext = false
         try {
             wallpaperChangeLock.mutex.withLock {
@@ -260,6 +282,8 @@ class FoldCoordinator @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // Try again at the next check (screen-off, playback stop or fold).
+            syncPending = true
             Log.e(TAG, "Fold sync failed", e)
         }
     }
@@ -305,9 +329,10 @@ class FoldCoordinator @Inject constructor(
             val entries = FoldSyncPolicy.writeTargets(expected.keys).flatMap { screen ->
                 wallpaperController.renderEncoded(screen, settings, target)
             }
-            // Only keep it if nothing changed while rendering.
+            // Only keep it if it covers every slot and nothing changed while rendering.
+            val covered = entries.flatMap { (screen, _) -> screen.staticSlots() }.toSet()
             val after = tracker.expectedSignatures(target, settingsRepository.getScheduleSettings())
-            if (entries.isNotEmpty() && after == expected && foldState.activePanel() == active) {
+            if (covered.containsAll(expected.keys) && after == expected && foldState.activePanel() == active) {
                 cache = PanelCache(target, expected, entries)
                 Log.d(TAG, "Prepared $target screen (${entries.sumOf { it.second.size } / 1024} KB)")
             }
