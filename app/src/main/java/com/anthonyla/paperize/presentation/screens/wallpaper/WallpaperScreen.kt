@@ -607,7 +607,7 @@ fun WallpaperScreen(
             ) {
                 Column(
                     modifier = Modifier
-                        .weight(0.42f)
+                        .weight(0.46f)
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState())
                         .padding(start = AppSpacing.small, bottom = AppSpacing.small),
@@ -618,7 +618,7 @@ fun WallpaperScreen(
                 }
                 Column(
                     modifier = Modifier
-                        .weight(0.58f)
+                        .weight(0.54f)
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState())
                         .padding(end = AppSpacing.small, bottom = AppSpacing.small),
