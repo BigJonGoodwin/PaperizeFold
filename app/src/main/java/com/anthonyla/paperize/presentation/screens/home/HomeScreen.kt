@@ -20,10 +20,12 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -51,8 +53,15 @@ fun HomeScreen(
     val showLiveWallpaperPrompt by viewModel.showLiveWallpaperPrompt.collectAsStateWithLifecycle()
     val currentHomeWallpaperUri by viewModel.currentHomeWallpaperUri.collectAsStateWithLifecycle()
     val currentLockWallpaperUri by viewModel.currentLockWallpaperUri.collectAsStateWithLifecycle()
+    val foldInfo by viewModel.foldInfo.collectAsStateWithLifecycle()
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // PaperizeFold: folding or unfolding resizes the window; re-read which screen is in use.
+    val configuration = LocalConfiguration.current
+    LaunchedEffect(configuration.screenWidthDp, configuration.screenHeightDp) {
+        viewModel.refreshFoldState()
+    }
 
     val tabItems = getTabItems(
         wallpaperTitle = stringResource(R.string.wallpaper),
@@ -115,7 +124,8 @@ fun HomeScreen(
                                         viewModel.changeWallpaperNowForActiveScreens()
                                     },
                                     homeWallpaperUri = currentHomeWallpaperUri,
-                                    lockWallpaperUri = currentLockWallpaperUri
+                                    lockWallpaperUri = currentLockWallpaperUri,
+                                    foldInfo = foldInfo
                                 )
                             }
                         }

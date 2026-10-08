@@ -2,8 +2,8 @@ package com.anthonyla.paperize.domain.usecase
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.util.Size
 import com.anthonyla.paperize.R
+import com.anthonyla.paperize.core.FoldPanel
 import com.anthonyla.paperize.core.Result
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.util.WallpaperRenderer
@@ -22,7 +22,7 @@ class ReapplyEffectsUseCase @Inject constructor(
         albumId: String,
         screenType: ScreenType,
         wallpaperId: String? = null,
-        targetSize: Size? = null
+        panel: FoldPanel? = null
     ): Result<Bitmap> =
         Result.runCatching {
             val wallpaper = if (wallpaperId != null) wallpaperRepository.getWallpaperById(wallpaperId)
@@ -30,7 +30,7 @@ class ReapplyEffectsUseCase @Inject constructor(
             val message = context.getString(R.string.error_no_valid_wallpaper_after_retries)
             checkNotNull(wallpaper) { message }
             checkNotNull(
-                renderer.render(wallpaper, screenType, settingsRepository.getScheduleSettings(), targetSize)
+                renderer.render(wallpaper, screenType, settingsRepository.getScheduleSettings(), panel)
             ) { message }
         }
 }

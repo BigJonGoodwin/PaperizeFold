@@ -1,9 +1,13 @@
 package com.anthonyla.paperize.presentation.screens.wallpaper
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -37,9 +41,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.anthonyla.paperize.core.constants.Constants
 import com.anthonyla.paperize.R
+import com.anthonyla.paperize.core.FoldPanel
 import com.anthonyla.paperize.core.ScalingType
+import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.WallpaperMode
 import com.anthonyla.paperize.domain.model.AlbumSummary
 import com.anthonyla.paperize.domain.model.AppSettings
@@ -48,13 +55,52 @@ import com.anthonyla.paperize.domain.model.ScheduleSettings
 import com.anthonyla.paperize.presentation.common.components.SettingSwitchItem
 import com.anthonyla.paperize.presentation.screens.wallpaper.components.AlbumSelectionBottomSheet
 import com.anthonyla.paperize.presentation.screens.wallpaper.components.CurrentWallpaperPreview
+import com.anthonyla.paperize.presentation.screens.wallpaper.components.FoldWallpaperPreview
 import com.anthonyla.paperize.presentation.screens.wallpaper.components.SettingSwitchWithSlider
 import com.anthonyla.paperize.presentation.screens.wallpaper.components.TimeIntervalPicker
+import com.anthonyla.paperize.presentation.screens.wallpaper.components.panelLabel
 import com.anthonyla.paperize.presentation.theme.AppSpacing
+import com.anthonyla.paperize.service.fold.FoldInfo
 
 private enum class AlbumSelectionContext {
     HOME, LOCK, LIVE
 }
+
+/** One visual effect: how to read and change it on a [WallpaperEffects]. */
+private class EffectSpec(
+    @StringRes val title: Int,
+    @StringRes val description: Int,
+    val isEnabled: (WallpaperEffects) -> Boolean,
+    val percentage: (WallpaperEffects) -> Int,
+    val withEnabled: (WallpaperEffects, Boolean) -> WallpaperEffects,
+    val withPercentage: (WallpaperEffects, Int) -> WallpaperEffects
+)
+
+private val EFFECT_SPECS = listOf(
+    EffectSpec(
+        R.string.change_brightness, R.string.change_the_image_brightness,
+        { it.enableDarken }, { it.darkenPercentage },
+        { e, on -> e.copy(enableDarken = on) }, { e, value -> e.copy(darkenPercentage = value) }
+    ),
+    EffectSpec(
+        R.string.change_blur, R.string.add_blur_to_the_image,
+        { it.enableBlur }, { it.blurPercentage },
+        { e, on -> e.copy(enableBlur = on) }, { e, value -> e.copy(blurPercentage = value) }
+    ),
+    EffectSpec(
+        R.string.change_vignette, R.string.darken_the_edges_of_the_image,
+        { it.enableVignette }, { it.vignettePercentage },
+        { e, on -> e.copy(enableVignette = on) }, { e, value -> e.copy(vignettePercentage = value) }
+    ),
+    EffectSpec(
+        R.string.gray_filter, R.string.make_the_colors_grayscale,
+        { it.enableGrayscale }, { it.grayscalePercentage },
+        { e, on -> e.copy(enableGrayscale = on) }, { e, value -> e.copy(grayscalePercentage = value) }
+    )
+)
+
+/** PaperizeFold: at this width (an unfolded foldable or a tablet) the preview gets its own pane. */
+private val TWO_PANE_MIN_WIDTH = 600.dp
 
 @Composable
 fun WallpaperScreen(
@@ -71,11 +117,13 @@ fun WallpaperScreen(
     onChangeWallpaperNow: () -> Unit,
     homeWallpaperUri: String?,
     lockWallpaperUri: String?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    foldInfo: FoldInfo = FoldInfo()
 ) {
     var albumSelectionContext by rememberSaveable { mutableStateOf<AlbumSelectionContext?>(null) }
     var showEmptyAlbumWarning by rememberSaveable { mutableStateOf(false) }
     var scheduleSettings by remember { mutableStateOf(persistedScheduleSettings) }
+    var editingPanel by rememberSaveable { mutableStateOf(FoldPanel.MAIN) }
 
     // Keep an immediate local draft so a slider value waiting for the ViewModel debounce
     // is included in a switch or other setting changed before that debounce expires.
@@ -93,30 +141,51 @@ fun WallpaperScreen(
         onUpdateScheduleSettings(newSettings)
     }
 
+    val isStatic = wallpaperMode == WallpaperMode.STATIC
     val homeEnabled = scheduleSettings.homeEnabled
     val lockEnabled = scheduleSettings.lockEnabled
+    val bothEnabled = isStatic && homeEnabled && lockEnabled
+
+    // PaperizeFold: with a separate cover look, the controls below edit the selected screen.
+    val foldControls = foldInfo.foldable && isStatic
+    val coverSeparate = foldControls && scheduleSettings.separateCoverSettings
+    val editPanel = if (coverSeparate) editingPanel else FoldPanel.MAIN
+    val editedHomeEffects = scheduleSettings.effectsFor(ScreenType.HOME, editPanel)
+    val editedLockEffects = scheduleSettings.effectsFor(ScreenType.LOCK, editPanel)
 
     val primaryEffects = when {
-        wallpaperMode == WallpaperMode.LIVE -> scheduleSettings.liveEffects
-        homeEnabled -> scheduleSettings.homeEffects
-        else -> scheduleSettings.lockEffects
+        !isStatic -> scheduleSettings.liveEffects
+        homeEnabled -> editedHomeEffects
+        else -> editedLockEffects
     }
-    val bothEnabled = wallpaperMode == WallpaperMode.STATIC && homeEnabled && lockEnabled
+
+    fun ScheduleSettings.withScreenEffects(
+        screen: ScreenType,
+        transform: (WallpaperEffects) -> WallpaperEffects
+    ): ScheduleSettings = when {
+        editPanel == FoldPanel.COVER && screen == ScreenType.LOCK -> copy(coverLockEffects = transform(coverLockEffects))
+        editPanel == FoldPanel.COVER -> copy(coverHomeEffects = transform(coverHomeEffects))
+        screen == ScreenType.LOCK -> copy(lockEffects = transform(lockEffects))
+        else -> copy(homeEffects = transform(homeEffects))
+    }
 
     fun updateEffects(
         home: (WallpaperEffects) -> WallpaperEffects,
         lock: (WallpaperEffects) -> WallpaperEffects = home,
         debounced: Boolean = false
     ) {
-        val updated = if (wallpaperMode == WallpaperMode.LIVE) {
-            scheduleSettings.copy(liveEffects = home(scheduleSettings.liveEffects))
+        var updated = scheduleSettings
+        if (!isStatic) {
+            updated = updated.copy(liveEffects = home(updated.liveEffects))
         } else {
-            scheduleSettings.copy(
-                homeEffects = if (homeEnabled) home(scheduleSettings.homeEffects) else scheduleSettings.homeEffects,
-                lockEffects = if (lockEnabled) lock(scheduleSettings.lockEffects) else scheduleSettings.lockEffects
-            )
+            if (homeEnabled) updated = updated.withScreenEffects(ScreenType.HOME, home)
+            if (lockEnabled) updated = updated.withScreenEffects(ScreenType.LOCK, lock)
         }
         if (debounced) updateSettingsDebounced(updated) else updateSettingsImmediate(updated)
+    }
+
+    fun updateScreenEffects(screen: ScreenType, transform: (WallpaperEffects) -> WallpaperEffects) {
+        updateSettingsImmediate(scheduleSettings.withScreenEffects(screen, transform))
     }
 
     val scalingOptions = listOf(
@@ -125,16 +194,25 @@ fun WallpaperScreen(
         ScalingType.STRETCH to stringResource(R.string.stretch),
         ScalingType.NONE to stringResource(R.string.none)
     )
-    val selectedScaling = if (wallpaperMode == WallpaperMode.LIVE) scheduleSettings.liveScalingType else scheduleSettings.homeScalingType
+    val selectedScaling = if (!isStatic) scheduleSettings.liveScalingType
+        else scheduleSettings.scalingFor(ScreenType.HOME, editPanel)
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(start = AppSpacing.small, end = AppSpacing.small, bottom = AppSpacing.small),
-        verticalArrangement = Arrangement.spacedBy(AppSpacing.small)
-    ) {
-        if (wallpaperMode == WallpaperMode.STATIC) {
+    fun updateScaling(scalingType: ScalingType) {
+        updateSettingsImmediate(
+            when {
+                !isStatic -> scheduleSettings.copy(liveScalingType = scalingType)
+                editPanel == FoldPanel.COVER -> scheduleSettings.copy(coverScalingType = scalingType)
+                else -> scheduleSettings.copy(homeScalingType = scalingType, lockScalingType = scalingType)
+            }
+        )
+    }
+
+    val hasAlbumSelected = scheduleSettings.activeScreens(wallpaperMode).isNotEmpty()
+    val allRequiredAlbumsSelected = scheduleSettings.hasRequiredAlbums(wallpaperMode)
+    val selectPanel: (FoldPanel) -> Unit = { editingPanel = it }
+
+    val scheduleSection: @Composable ColumnScope.() -> Unit = {
+        if (isStatic) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.small, vertical = AppSpacing.extraSmall),
                 horizontalArrangement = Arrangement.spacedBy(AppSpacing.small)
@@ -167,7 +245,7 @@ fun WallpaperScreen(
                 onClick = { albumSelectionContext = AlbumSelectionContext.LIVE }
             )
         }
-        if (wallpaperMode == WallpaperMode.STATIC && scheduleSettings.enableChanger && homeEnabled && lockEnabled) {
+        if (isStatic && scheduleSettings.enableChanger && homeEnabled && lockEnabled) {
             SettingSwitchItem(
                 title = stringResource(R.string.individual_scheduling),
                 description = stringResource(R.string.show_interval_sliders),
@@ -178,9 +256,6 @@ fun WallpaperScreen(
             )
         }
 
-        val hasAlbumSelected = scheduleSettings.activeScreens(wallpaperMode).isNotEmpty()
-        val allRequiredAlbumsSelected = scheduleSettings.hasRequiredAlbums(wallpaperMode)
-
         if (allRequiredAlbumsSelected) {
             SettingSwitchItem(
                 title = stringResource(R.string.wallpaper_changer),
@@ -190,7 +265,7 @@ fun WallpaperScreen(
             )
         }
         if (hasAlbumSelected) {
-            if (wallpaperMode == WallpaperMode.STATIC) {
+            if (isStatic) {
                 if (!scheduleSettings.separateSchedules || !homeEnabled || !lockEnabled) {
                     TimeIntervalPicker(
                         title = stringResource(R.string.interval_text),
@@ -243,29 +318,58 @@ fun WallpaperScreen(
                 )
             }
         }
+        SettingSwitchItem(
+            title = stringResource(R.string.shuffle),
+            description = if (scheduleSettings.shuffleEnabled && !scheduleSettings.separateSchedules) null else stringResource(R.string.randomly_shuffle_the_wallpapers),
+            checked = scheduleSettings.shuffleEnabled,
+            onCheckedChange = { enabled ->
+                updateSettingsImmediate(scheduleSettings.copy(shuffleEnabled = enabled))
+            }
+        )
+    }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = AppSpacing.small))
-        if (wallpaperMode == WallpaperMode.STATIC) {
-            SettingSwitchItem(
-                title = stringResource(R.string.horizontal_wallpaper_scrolling),
-                description = stringResource(R.string.horizontal_wallpaper_scrolling_description),
-                checked = scheduleSettings.homeScrollingEnabled,
-                onCheckedChange = { enabled ->
-                    updateSettingsImmediate(
-                        scheduleSettings.copy(homeScrollingEnabled = enabled)
+    val changeNowButton: @Composable ColumnScope.() -> Unit = {
+        if (hasAlbumSelected) {
+            Button(
+                onClick = onChangeWallpaperNow,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        PaddingValues(
+                            horizontal = AppSpacing.small,
+                            vertical = AppSpacing.extraSmall
+                        )
                     )
-                }
-            )
+            ) {
+                Text(text = stringResource(R.string.change_wallpaper_now))
+            }
         }
+    }
 
-        if (wallpaperMode == WallpaperMode.STATIC) {
-            CurrentWallpaperPreview(
-                homeWallpaperUri = homeWallpaperUri,
-                lockWallpaperUri = lockWallpaperUri,
-                animate = appSettings.animate
-            )
-            HorizontalDivider(modifier = Modifier.padding(vertical = AppSpacing.small))
+    val previewSection: @Composable ColumnScope.() -> Unit = {
+        if (isStatic) {
+            if (foldInfo.foldable) {
+                FoldWallpaperPreview(
+                    homeWallpaperUri = homeWallpaperUri,
+                    lockWallpaperUri = lockWallpaperUri,
+                    settings = scheduleSettings,
+                    foldInfo = foldInfo,
+                    selectedPanel = if (coverSeparate) editingPanel else null,
+                    onSelectPanel = if (coverSeparate) selectPanel else null,
+                    animate = appSettings.animate
+                )
+            } else {
+                CurrentWallpaperPreview(
+                    homeWallpaperUri = homeWallpaperUri,
+                    lockWallpaperUri = lockWallpaperUri,
+                    settings = scheduleSettings,
+                    animate = appSettings.animate
+                )
+            }
         }
+    }
+
+    val lookSection: @Composable ColumnScope.() -> Unit = {
         Text(
             text = stringResource(R.string.wallpaper_effects_title),
             style = MaterialTheme.typography.titleLarge,
@@ -274,6 +378,41 @@ fun WallpaperScreen(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
+        if (foldControls) {
+            SettingSwitchItem(
+                title = stringResource(R.string.fold_separate_cover),
+                description = stringResource(R.string.fold_separate_cover_desc),
+                checked = scheduleSettings.separateCoverSettings,
+                onCheckedChange = { on ->
+                    var updated = scheduleSettings.copy(separateCoverSettings = on)
+                    // Start the cover from the main screen's look the first time they're split.
+                    if (on && scheduleSettings.hasDefaultCoverLook) updated = updated.withCoverLookFromMain()
+                    updateSettingsImmediate(updated)
+                    editingPanel = if (on) FoldPanel.COVER else FoldPanel.MAIN
+                }
+            )
+            if (coverSeparate) {
+                SingleChoiceSegmentedButtonRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AppSpacing.small, vertical = AppSpacing.extraSmall)
+                ) {
+                    FoldPanel.entries.forEachIndexed { index, panel ->
+                        SegmentedButton(
+                            shape = SegmentedButtonDefaults.itemShape(index = index, count = FoldPanel.entries.size),
+                            onClick = { editingPanel = panel },
+                            selected = editingPanel == panel
+                        ) {
+                            Text(
+                                text = stringResource(panelLabel(panel)),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
         Card(
             shape = MaterialTheme.shapes.medium,
             colors = CardDefaults.cardColors(
@@ -301,18 +440,7 @@ fun WallpaperScreen(
                                 index = index,
                                 count = scalingOptions.size
                             ),
-                            onClick = {
-                                updateSettingsImmediate(
-                                    if (wallpaperMode == WallpaperMode.LIVE) {
-                                        scheduleSettings.copy(liveScalingType = scalingType)
-                                    } else {
-                                        scheduleSettings.copy(
-                                            homeScalingType = scalingType,
-                                            lockScalingType = scalingType
-                                        )
-                                    }
-                                )
-                            },
+                            onClick = { updateScaling(scalingType) },
                             selected = scalingType == selectedScaling
                         ) {
                             Text(
@@ -325,30 +453,18 @@ fun WallpaperScreen(
                 }
             }
         }
-
-        if (hasAlbumSelected) {
-            Button(
-                onClick = onChangeWallpaperNow,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        PaddingValues(
-                            horizontal = AppSpacing.small,
-                            vertical = AppSpacing.extraSmall
-                        )
+        if (isStatic) {
+            SettingSwitchItem(
+                title = stringResource(R.string.horizontal_wallpaper_scrolling),
+                description = stringResource(R.string.horizontal_wallpaper_scrolling_description),
+                checked = scheduleSettings.homeScrollingEnabled,
+                onCheckedChange = { enabled ->
+                    updateSettingsImmediate(
+                        scheduleSettings.copy(homeScrollingEnabled = enabled)
                     )
-            ) {
-                Text(text = stringResource(R.string.change_wallpaper_now))
-            }
+                }
+            )
         }
-        SettingSwitchItem(
-            title = stringResource(R.string.shuffle),
-            description = if (scheduleSettings.shuffleEnabled && !scheduleSettings.separateSchedules) null else stringResource(R.string.randomly_shuffle_the_wallpapers),
-            checked = scheduleSettings.shuffleEnabled,
-            onCheckedChange = { enabled ->
-                updateSettingsImmediate(scheduleSettings.copy(shuffleEnabled = enabled))
-            }
-        )
 
         Card(
             shape = MaterialTheme.shapes.medium,
@@ -372,89 +488,32 @@ fun WallpaperScreen(
                     overflow = TextOverflow.Ellipsis
                 )
 
-                SettingSwitchWithSlider(
-                    title = R.string.change_brightness,
-                    description = R.string.change_the_image_brightness,
-                    checked = primaryEffects.enableDarken,
-                    onCheckedChange = { enabled -> updateEffects({ it.copy(enableDarken = enabled) }) },
-                    homeChecked = scheduleSettings.homeEffects.enableDarken,
-                    lockChecked = scheduleSettings.lockEffects.enableDarken,
-                    onHomeCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(homeEffects = scheduleSettings.homeEffects.copy(enableDarken = enabled)))
-                    },
-                    onLockCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(lockEffects = scheduleSettings.lockEffects.copy(enableDarken = enabled)))
-                    },
-                    bothEnabled = bothEnabled,
-                    homePercentage = primaryEffects.darkenPercentage,
-                    lockPercentage = scheduleSettings.lockEffects.darkenPercentage,
-                    onPercentageChange = { home, lock ->
-                        updateEffects({ it.copy(darkenPercentage = home) }, { it.copy(darkenPercentage = lock) }, debounced = true)
-                    }
-                )
-
-                SettingSwitchWithSlider(
-                    title = R.string.change_blur,
-                    description = R.string.add_blur_to_the_image,
-                    checked = primaryEffects.enableBlur,
-                    onCheckedChange = { enabled -> updateEffects({ it.copy(enableBlur = enabled) }) },
-                    homeChecked = scheduleSettings.homeEffects.enableBlur,
-                    lockChecked = scheduleSettings.lockEffects.enableBlur,
-                    onHomeCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(homeEffects = scheduleSettings.homeEffects.copy(enableBlur = enabled)))
-                    },
-                    onLockCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(lockEffects = scheduleSettings.lockEffects.copy(enableBlur = enabled)))
-                    },
-                    bothEnabled = bothEnabled,
-                    homePercentage = primaryEffects.blurPercentage,
-                    lockPercentage = scheduleSettings.lockEffects.blurPercentage,
-                    onPercentageChange = { home, lock ->
-                        updateEffects({ it.copy(blurPercentage = home) }, { it.copy(blurPercentage = lock) }, debounced = true)
-                    }
-                )
-
-                SettingSwitchWithSlider(
-                    title = R.string.change_vignette,
-                    description = R.string.darken_the_edges_of_the_image,
-                    checked = primaryEffects.enableVignette,
-                    onCheckedChange = { enabled -> updateEffects({ it.copy(enableVignette = enabled) }) },
-                    homeChecked = scheduleSettings.homeEffects.enableVignette,
-                    lockChecked = scheduleSettings.lockEffects.enableVignette,
-                    onHomeCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(homeEffects = scheduleSettings.homeEffects.copy(enableVignette = enabled)))
-                    },
-                    onLockCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(lockEffects = scheduleSettings.lockEffects.copy(enableVignette = enabled)))
-                    },
-                    bothEnabled = bothEnabled,
-                    homePercentage = primaryEffects.vignettePercentage,
-                    lockPercentage = scheduleSettings.lockEffects.vignettePercentage,
-                    onPercentageChange = { home, lock ->
-                        updateEffects({ it.copy(vignettePercentage = home) }, { it.copy(vignettePercentage = lock) }, debounced = true)
-                    }
-                )
-
-                SettingSwitchWithSlider(
-                    title = R.string.gray_filter,
-                    description = R.string.make_the_colors_grayscale,
-                    checked = primaryEffects.enableGrayscale,
-                    onCheckedChange = { enabled -> updateEffects({ it.copy(enableGrayscale = enabled) }) },
-                    homeChecked = scheduleSettings.homeEffects.enableGrayscale,
-                    lockChecked = scheduleSettings.lockEffects.enableGrayscale,
-                    onHomeCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(homeEffects = scheduleSettings.homeEffects.copy(enableGrayscale = enabled)))
-                    },
-                    onLockCheckedChange = { enabled ->
-                        updateSettingsImmediate(scheduleSettings.copy(lockEffects = scheduleSettings.lockEffects.copy(enableGrayscale = enabled)))
-                    },
-                    bothEnabled = bothEnabled,
-                    homePercentage = primaryEffects.grayscalePercentage,
-                    lockPercentage = scheduleSettings.lockEffects.grayscalePercentage,
-                    onPercentageChange = { home, lock ->
-                        updateEffects({ it.copy(grayscalePercentage = home) }, { it.copy(grayscalePercentage = lock) }, debounced = true)
-                    }
-                )
+                EFFECT_SPECS.forEach { spec ->
+                    SettingSwitchWithSlider(
+                        title = spec.title,
+                        description = spec.description,
+                        checked = spec.isEnabled(primaryEffects),
+                        onCheckedChange = { enabled -> updateEffects({ spec.withEnabled(it, enabled) }) },
+                        homeChecked = spec.isEnabled(editedHomeEffects),
+                        lockChecked = spec.isEnabled(editedLockEffects),
+                        onHomeCheckedChange = { enabled ->
+                            updateScreenEffects(ScreenType.HOME) { spec.withEnabled(it, enabled) }
+                        },
+                        onLockCheckedChange = { enabled ->
+                            updateScreenEffects(ScreenType.LOCK) { spec.withEnabled(it, enabled) }
+                        },
+                        bothEnabled = bothEnabled,
+                        homePercentage = spec.percentage(primaryEffects),
+                        lockPercentage = spec.percentage(editedLockEffects),
+                        onPercentageChange = { home, lock ->
+                            updateEffects(
+                                { spec.withPercentage(it, home) },
+                                { spec.withPercentage(it, lock) },
+                                debounced = true
+                            )
+                        }
+                    )
+                }
                 SettingSwitchItem(
                     title = stringResource(R.string.adaptive_brightness),
                     description = if (scheduleSettings.adaptiveBrightness && !scheduleSettings.separateSchedules) null else stringResource(R.string.adjust_brightness_based_on_mode),
@@ -465,7 +524,7 @@ fun WallpaperScreen(
                 )
             }
         }
-        if (wallpaperMode == WallpaperMode.LIVE) {
+        if (!isStatic) {
             Card(
                 shape = MaterialTheme.shapes.medium,
                 colors = CardDefaults.cardColors(
@@ -534,6 +593,56 @@ fun WallpaperScreen(
                         }
                     )
                 }
+            }
+        }
+    }
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        // PaperizeFold: on a wide screen (unfolded) keep the preview in view next to the
+        // controls, so every slider change can be seen on both screens as it happens.
+        if (isStatic && maxWidth >= TWO_PANE_MIN_WIDTH) {
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.extraSmall)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(0.42f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = AppSpacing.small, bottom = AppSpacing.small),
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.small)
+                ) {
+                    previewSection()
+                    changeNowButton()
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(0.58f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(end = AppSpacing.small, bottom = AppSpacing.small),
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.small)
+                ) {
+                    scheduleSection()
+                    HorizontalDivider(modifier = Modifier.padding(vertical = AppSpacing.small))
+                    lookSection()
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = AppSpacing.small, end = AppSpacing.small, bottom = AppSpacing.small),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.small)
+            ) {
+                scheduleSection()
+                changeNowButton()
+                HorizontalDivider(modifier = Modifier.padding(vertical = AppSpacing.small))
+                // The preview sits right above the look controls so edits stay in view.
+                previewSection()
+                lookSection()
             }
         }
     }

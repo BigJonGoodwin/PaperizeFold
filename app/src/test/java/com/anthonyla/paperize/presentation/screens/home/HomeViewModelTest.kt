@@ -10,6 +10,8 @@ import com.anthonyla.paperize.domain.model.ScheduleSettings
 import com.anthonyla.paperize.domain.repository.AlbumRepository
 import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.domain.repository.WallpaperRepository
+import com.anthonyla.paperize.service.fold.FoldInfo
+import com.anthonyla.paperize.service.fold.FoldState
 import com.anthonyla.paperize.service.worker.WallpaperScheduler
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +52,11 @@ class HomeViewModelTest {
             stored.value
         }
         every { wallpapers.getCurrentWallpaperFlow(any(), any()) } returns flowOf(null)
-        viewModel = HomeViewModel(mockk<Context>(), albums, mockk(), settings, scheduler, wallpapers, mockk(relaxed = true))
+        val foldState = mockk<FoldState> {
+            every { info } returns MutableStateFlow(FoldInfo())
+            every { activePanel() } returns null
+        }
+        viewModel = HomeViewModel(mockk<Context>(), albums, mockk(), settings, scheduler, wallpapers, mockk(relaxed = true), foldState)
         store.put("home", viewModel)
     }
 

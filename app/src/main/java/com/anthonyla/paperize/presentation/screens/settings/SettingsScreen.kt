@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -82,6 +83,9 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .verticalScroll(rememberScrollState())
+                // PaperizeFold: keep settings readable on the wide unfolded screen.
+                .wrapContentWidth(Alignment.CenterHorizontally)
+                .widthIn(max = SETTINGS_MAX_WIDTH)
                 .padding(horizontal = AppSpacing.large)
         ) {
             if (resetFailed) Text(stringResource(R.string.reset_failed), color = MaterialTheme.colorScheme.error)
@@ -301,6 +305,19 @@ fun SettingsScreen(
                     onCheckedChange = { on -> viewModel.updateFoldSettings { it.copy(foldWaitForMedia = on) } }
                 )
 
+                Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+
+                SettingActionItem(
+                    title = stringResource(R.string.fold_resync),
+                    description = stringResource(R.string.fold_resync_desc),
+                    actionLabel = stringResource(R.string.fold_resync_action),
+                    enabled = foldSettings.foldSyncEnabled,
+                    onClick = {
+                        viewModel.resyncScreens()
+                        Toast.makeText(context, R.string.fold_resync_started, Toast.LENGTH_SHORT).show()
+                    }
+                )
+
                 Spacer(modifier = Modifier.height(AppSpacing.extraLarge))
             }
 
@@ -473,6 +490,60 @@ fun SettingsScreen(
                     }
                 }
             )
+        }
+    }
+}
+
+private val SETTINGS_MAX_WIDTH = 720.dp
+
+/** PaperizeFold: a one-tap action, styled like the app's switch cards. */
+@Composable
+private fun SettingActionItem(
+    title: String,
+    description: String,
+    actionLabel: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(PaddingValues(horizontal = AppSpacing.small, vertical = AppSpacing.extraSmall)),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AppSpacing.large),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(AppSpacing.extraSmall))
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(AppSpacing.medium))
+            FilledTonalButton(onClick = onClick, enabled = enabled) {
+                Text(text = actionLabel, maxLines = 1)
+            }
         }
     }
 }

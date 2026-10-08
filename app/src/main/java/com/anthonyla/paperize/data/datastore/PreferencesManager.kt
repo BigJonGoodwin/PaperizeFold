@@ -2,6 +2,7 @@ package com.anthonyla.paperize.data.datastore
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -120,8 +121,35 @@ class PreferencesManager @Inject constructor(
             enableParallax = prefs[booleanPreferencesKey(PreferenceKeys.LIVE_ENABLE_PARALLAX)] ?: false,
             parallaxIntensity = prefs[intPreferencesKey(PreferenceKeys.LIVE_PARALLAX_INTENSITY)] ?: Constants.DEFAULT_PARALLAX_INTENSITY
         ),
-        adaptiveBrightness = prefs[booleanPreferencesKey(PreferenceKeys.ADAPTIVE_BRIGHTNESS)] ?: false
+        adaptiveBrightness = prefs[booleanPreferencesKey(PreferenceKeys.ADAPTIVE_BRIGHTNESS)] ?: false,
+        separateCoverSettings = prefs[booleanPreferencesKey(PreferenceKeys.SEPARATE_COVER_SETTINGS)] ?: false,
+        coverScalingType = ScalingType.fromString(prefs[stringPreferencesKey(PreferenceKeys.COVER_SCALING_TYPE)]),
+        coverHomeEffects = coverEffects(prefs, PreferenceKeys.COVER_HOME_EFFECTS_PREFIX),
+        coverLockEffects = coverEffects(prefs, PreferenceKeys.COVER_LOCK_EFFECTS_PREFIX)
     )
+
+    /** PaperizeFold: cover screen effects (static wallpapers only, so no interactive fields). */
+    private fun coverEffects(prefs: Preferences, prefix: String) = WallpaperEffects(
+        enableBlur = prefs[booleanPreferencesKey(prefix + "enable_blur")] ?: false,
+        blurPercentage = prefs[intPreferencesKey(prefix + "blur")] ?: 0,
+        enableDarken = prefs[booleanPreferencesKey(prefix + "enable_darken")] ?: false,
+        darkenPercentage = prefs[intPreferencesKey(prefix + "darken")] ?: 0,
+        enableVignette = prefs[booleanPreferencesKey(prefix + "enable_vignette")] ?: false,
+        vignettePercentage = prefs[intPreferencesKey(prefix + "vignette")] ?: 0,
+        enableGrayscale = prefs[booleanPreferencesKey(prefix + "enable_grayscale")] ?: false,
+        grayscalePercentage = prefs[intPreferencesKey(prefix + "grayscale")] ?: 0
+    )
+
+    private fun MutablePreferences.putCoverEffects(prefix: String, effects: WallpaperEffects) {
+        this[booleanPreferencesKey(prefix + "enable_blur")] = effects.enableBlur
+        this[intPreferencesKey(prefix + "blur")] = effects.blurPercentage
+        this[booleanPreferencesKey(prefix + "enable_darken")] = effects.enableDarken
+        this[intPreferencesKey(prefix + "darken")] = effects.darkenPercentage
+        this[booleanPreferencesKey(prefix + "enable_vignette")] = effects.enableVignette
+        this[intPreferencesKey(prefix + "vignette")] = effects.vignettePercentage
+        this[booleanPreferencesKey(prefix + "enable_grayscale")] = effects.enableGrayscale
+        this[intPreferencesKey(prefix + "grayscale")] = effects.grayscalePercentage
+    }
 
     suspend fun updateScheduleSettings(settings: ScheduleSettings) {
         updateScheduleSettings { settings }
@@ -196,6 +224,11 @@ class PreferencesManager @Inject constructor(
             prefs[intPreferencesKey(PreferenceKeys.LIVE_PARALLAX_INTENSITY)] = settings.liveEffects.parallaxIntensity
 
             prefs[booleanPreferencesKey(PreferenceKeys.ADAPTIVE_BRIGHTNESS)] = settings.adaptiveBrightness
+
+            prefs[booleanPreferencesKey(PreferenceKeys.SEPARATE_COVER_SETTINGS)] = settings.separateCoverSettings
+            prefs[stringPreferencesKey(PreferenceKeys.COVER_SCALING_TYPE)] = settings.coverScalingType.name
+            prefs.putCoverEffects(PreferenceKeys.COVER_HOME_EFFECTS_PREFIX, settings.coverHomeEffects)
+            prefs.putCoverEffects(PreferenceKeys.COVER_LOCK_EFFECTS_PREFIX, settings.coverLockEffects)
         }
         return scheduleSettings(updated)
     }

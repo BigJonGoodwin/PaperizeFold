@@ -4,10 +4,11 @@ import android.app.WallpaperManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.util.Size
 import com.anthonyla.paperize.core.EmptyAlbumException
+import com.anthonyla.paperize.core.FoldPanel
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.constants.Constants
+import com.anthonyla.paperize.core.staticSlots
 import com.anthonyla.paperize.core.util.setBitmapChecked
 import com.anthonyla.paperize.domain.model.PreparedWallpaper
 import com.anthonyla.paperize.domain.model.ScheduleSettings
@@ -15,6 +16,7 @@ import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.domain.repository.WallpaperRepository
 import com.anthonyla.paperize.domain.usecase.ChangeWallpaperUseCase
 import com.anthonyla.paperize.domain.usecase.ReapplyEffectsUseCase
+import com.anthonyla.paperize.service.fold.PanelTracker
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -34,59 +36,91 @@ class WallpaperController @Inject constructor(
     private val prepare: ChangeWallpaperUseCase,
     private val render: ReapplyEffectsUseCase,
     private val settingsRepository: SettingsRepository,
-    private val wallpaperRepository: WallpaperRepository
+    private val wallpaperRepository: WallpaperRepository,
+    private val panelTracker: PanelTracker
 ) {
-    suspend fun change(screen: ScreenType, settings: ScheduleSettings): WallpaperChangeOutcome = when (screen) {
-        ScreenType.LIVE -> {
-            context.sendBroadcast(Intent(Constants.ACTION_RELOAD_WALLPAPER).setPackage(context.packageName))
-            WallpaperChangeOutcome(changed = true)
+    /**
+     * PaperizeFold: one public operation. [panel] is the foldable screen it renders for (null on
+     * regular phones); [written] collects the home/lock slots Android actually accepted, which are
+     * reported to [PanelTracker] when the operation ends.
+     */
+    private class Op(val panel: FoldPanel?) {
+        val written = mutableSetOf<ScreenType>()
+        val presentationPanel: FoldPanel get() = panel ?: FoldPanel.MAIN
+        fun wrote(screen: ScreenType) {
+            written += screen.staticSlots()
         }
-        ScreenType.HOME -> changeSelected(settings.homeAlbumId, screen)
-        ScreenType.LOCK -> changeSelected(settings.lockAlbumId, screen)
-        ScreenType.BOTH -> {
-            val home = settings.homeAlbumId
-            if (home != null && home == settings.lockAlbumId && !settings.separateSchedules) {
-                changeSynchronized(home, settings)
-            } else {
-                combine(changeSelected(home, ScreenType.HOME), changeSelected(settings.lockAlbumId, ScreenType.LOCK))
+    }
+
+    private suspend fun <T> tracked(panel: FoldPanel? = null, block: suspend (Op) -> T): T {
+        val ticket = panelTracker.begin()
+        val op = Op(panel ?: ticket?.panel)
+        try {
+            return block(op)
+        } finally {
+            withContext(NonCancellable) { panelTracker.end(ticket, op.written) }
+        }
+    }
+
+    suspend fun change(screen: ScreenType, settings: ScheduleSettings): WallpaperChangeOutcome {
+        if (screen == ScreenType.LIVE) {
+            context.sendBroadcast(Intent(Constants.ACTION_RELOAD_WALLPAPER).setPackage(context.packageName))
+            return WallpaperChangeOutcome(changed = true)
+        }
+        return tracked { op ->
+            when (screen) {
+                ScreenType.HOME -> changeSelected(op, settings.homeAlbumId, screen)
+                ScreenType.LOCK -> changeSelected(op, settings.lockAlbumId, screen)
+                else -> {
+                    val home = settings.homeAlbumId
+                    if (home != null && home == settings.lockAlbumId && !settings.separateSchedules) {
+                        changeSynchronized(op, home, settings)
+                    } else {
+                        combine(
+                            changeSelected(op, home, ScreenType.HOME),
+                            changeSelected(op, settings.lockAlbumId, ScreenType.LOCK)
+                        )
+                    }
+                }
             }
         }
     }
 
-    private suspend fun changeSelected(albumId: String?, screen: ScreenType): WallpaperChangeOutcome {
+    private suspend fun changeSelected(op: Op, albumId: String?, screen: ScreenType): WallpaperChangeOutcome {
         if (albumId == null) return WallpaperChangeOutcome()
-        val prepared = prepareOrDisable(albumId, screen) ?: return WallpaperChangeOutcome(emptyAlbum = true)
-        applyPrepared(prepared, screen)
+        val prepared = prepareOrDisable(op, albumId, screen) ?: return WallpaperChangeOutcome(emptyAlbum = true)
+        applyPrepared(op, prepared, screen)
         return WallpaperChangeOutcome(changed = true)
     }
 
-    private suspend fun changeSynchronized(albumId: String, settings: ScheduleSettings): WallpaperChangeOutcome {
-        val prepared = prepareOrDisable(albumId, ScreenType.BOTH) ?: return WallpaperChangeOutcome(emptyAlbum = true)
-        if (settings.sameStaticPresentation()) {
-            applyPrepared(prepared, ScreenType.BOTH)
+    private suspend fun changeSynchronized(op: Op, albumId: String, settings: ScheduleSettings): WallpaperChangeOutcome {
+        val prepared = prepareOrDisable(op, albumId, ScreenType.BOTH) ?: return WallpaperChangeOutcome(emptyAlbum = true)
+        if (settings.samePresentation(op.presentationPanel)) {
+            applyPrepared(op, prepared, ScreenType.BOTH)
         } else {
-            applyPrepared(prepared, ScreenType.HOME)
-            val lockBitmap = render(albumId, ScreenType.LOCK, prepared.wallpaperId).getOrThrow()
-            applyBitmap(lockBitmap, ScreenType.LOCK) { prepare.complete(prepared, ScreenType.LOCK) }
+            applyPrepared(op, prepared, ScreenType.HOME)
+            val lockBitmap = render(albumId, ScreenType.LOCK, prepared.wallpaperId, op.panel).getOrThrow()
+            applyBitmap(op, lockBitmap, ScreenType.LOCK) { prepare.complete(prepared, ScreenType.LOCK) }
         }
         return WallpaperChangeOutcome(changed = true)
     }
 
-    private suspend fun prepareOrDisable(albumId: String, screen: ScreenType): PreparedWallpaper? {
+    private suspend fun prepareOrDisable(op: Op, albumId: String, screen: ScreenType): PreparedWallpaper? {
         try {
-            return prepare(albumId, if (screen == ScreenType.BOTH) ScreenType.HOME else screen).getOrThrow()
+            return prepare(albumId, if (screen == ScreenType.BOTH) ScreenType.HOME else screen, op.panel).getOrThrow()
         } catch (_: EmptyAlbumException) {
             settingsRepository.clearEmptyAlbumSelection(albumId, screen)
             return null
         }
     }
 
-    private suspend fun applyPrepared(prepared: PreparedWallpaper, screen: ScreenType) {
+    private suspend fun applyPrepared(op: Op, prepared: PreparedWallpaper, screen: ScreenType) {
         var accepted = false
         try {
             currentCoroutineContext().ensureActive()
             wallpaperManager.setBitmapChecked(prepared.bitmap, screen.flags())
             accepted = true
+            op.wrote(screen)
             // Once Android accepts the bitmap, cancellation must not leave our current item stale.
             withContext(NonCancellable) {
                 screen.staticScreens().forEach { prepare.complete(prepared, it) }
@@ -100,60 +134,64 @@ class WallpaperController @Inject constructor(
     }
 
     suspend fun applySpecific(albumId: String, wallpaperId: String, screen: ScreenType, settings: ScheduleSettings) {
-        val targets = if (screen == ScreenType.BOTH && !settings.sameStaticPresentation()) {
-            listOf(ScreenType.HOME, ScreenType.LOCK)
-        } else listOf(screen)
-        for (target in targets) {
-            val renderScreen = if (target == ScreenType.BOTH) ScreenType.HOME else target
-            val bitmap = render(albumId, renderScreen, wallpaperId).getOrThrow()
-            applyBitmap(bitmap, target) {
-                target.staticScreens().forEach {
-                    prepare.completeSpecific(albumId, it, wallpaperId, settings.shuffleEnabled)
+        tracked { op ->
+            val targets = if (screen == ScreenType.BOTH && !settings.samePresentation(op.presentationPanel)) {
+                listOf(ScreenType.HOME, ScreenType.LOCK)
+            } else listOf(screen)
+            for (target in targets) {
+                val renderScreen = if (target == ScreenType.BOTH) ScreenType.HOME else target
+                val bitmap = render(albumId, renderScreen, wallpaperId, op.panel).getOrThrow()
+                applyBitmap(op, bitmap, target) {
+                    target.staticScreens().forEach {
+                        prepare.completeSpecific(albumId, it, wallpaperId, settings.shuffleEnabled)
+                    }
                 }
             }
         }
     }
 
     /**
-     * @param targetSize Render size override (PaperizeFold: the cover panel while folded).
+     * @param panel PaperizeFold: the foldable screen to render for; null means the one in use.
      * @param advanceIfMissing When the current image can't be rendered, move to the next one.
      *   Fold syncing passes false so folding the phone never skips a wallpaper.
      */
     suspend fun reapply(
         screen: ScreenType,
         settings: ScheduleSettings,
-        targetSize: Size? = null,
+        panel: FoldPanel? = null,
         advanceIfMissing: Boolean = true
     ): WallpaperChangeOutcome {
         if (screen == ScreenType.LIVE) return WallpaperChangeOutcome()
-        var outcome = WallpaperChangeOutcome()
-        for (target in reapplyTargets(screen, settings)) {
-            val albumId = albumFor(target, settings) ?: continue
-            val bitmap = render(albumId, target.renderScreen(), targetSize = targetSize).getOrNull()
-            if (bitmap == null && !advanceIfMissing) continue
-            val result = if (bitmap == null) changeSelected(albumId, target) else {
-                applyBitmap(bitmap, target)
-                WallpaperChangeOutcome(changed = true)
+        return tracked(panel) { op ->
+            var outcome = WallpaperChangeOutcome()
+            for (target in reapplyTargets(screen, settings, op.presentationPanel)) {
+                val albumId = albumFor(target, settings) ?: continue
+                val bitmap = render(albumId, target.renderScreen(), panel = op.panel).getOrNull()
+                if (bitmap == null && !advanceIfMissing) continue
+                val result = if (bitmap == null) changeSelected(op, albumId, target) else {
+                    applyBitmap(op, bitmap, target)
+                    WallpaperChangeOutcome(changed = true)
+                }
+                outcome = combine(outcome, result)
             }
-            outcome = combine(outcome, result)
+            outcome
         }
-        return outcome
     }
 
     /**
-     * PaperizeFold: render the current wallpaper(s) ahead of time and keep them as encoded PNGs,
-     * so a later [applyEncoded] only has to hand bytes to Android (no decode, effects, or encode).
+     * PaperizeFold: render the current wallpaper(s) for [panel] ahead of time and keep them as
+     * encoded PNGs, so a later [applyEncoded] only has to hand bytes to Android.
      */
     suspend fun renderEncoded(
         screen: ScreenType,
         settings: ScheduleSettings,
-        targetSize: Size?
+        panel: FoldPanel
     ): List<Pair<ScreenType, ByteArray>> {
         if (screen == ScreenType.LIVE) return emptyList()
         val encoded = mutableListOf<Pair<ScreenType, ByteArray>>()
-        for (target in reapplyTargets(screen, settings)) {
+        for (target in reapplyTargets(screen, settings, panel)) {
             val albumId = albumFor(target, settings) ?: continue
-            val bitmap = render(albumId, target.renderScreen(), targetSize = targetSize).getOrNull() ?: continue
+            val bitmap = render(albumId, target.renderScreen(), panel = panel).getOrNull() ?: continue
             try {
                 currentCoroutineContext().ensureActive()
                 val bytes = ByteArrayOutputStream().use { out ->
@@ -169,12 +207,16 @@ class WallpaperController @Inject constructor(
     }
 
     /** PaperizeFold: apply output of [renderEncoded]. Call while holding WallpaperChangeLock. */
-    fun applyEncoded(encoded: List<Pair<ScreenType, ByteArray>>) {
-        for ((target, bytes) in encoded) {
-            val id = ByteArrayInputStream(bytes).use { stream ->
-                wallpaperManager.setStream(stream, null, true, target.flags())
+    suspend fun applyEncoded(encoded: List<Pair<ScreenType, ByteArray>>) {
+        tracked { op ->
+            for ((target, bytes) in encoded) {
+                currentCoroutineContext().ensureActive()
+                val id = ByteArrayInputStream(bytes).use { stream ->
+                    wallpaperManager.setStream(stream, null, true, target.flags())
+                }
+                if (id == 0) throw IOException("WallpaperManager rejected the wallpaper")
+                op.wrote(target)
             }
-            if (id == 0) throw IOException("WallpaperManager rejected the wallpaper")
         }
     }
 
@@ -183,10 +225,10 @@ class WallpaperController @Inject constructor(
      * identical image and presentation. One write means one "wallpaper changed" broadcast, so
      * apps like ColorBlendr recolor once instead of twice.
      */
-    private suspend fun reapplyTargets(screen: ScreenType, settings: ScheduleSettings): List<ScreenType> {
+    private suspend fun reapplyTargets(screen: ScreenType, settings: ScheduleSettings, panel: FoldPanel): List<ScreenType> {
         if (screen != ScreenType.BOTH) return listOf(screen)
         val albumId = settings.homeAlbumId
-        if (albumId != null && albumId == settings.lockAlbumId && settings.sameStaticPresentation()) {
+        if (albumId != null && albumId == settings.lockAlbumId && settings.samePresentation(panel)) {
             val homeId = wallpaperRepository.getCurrentWallpaper(albumId, ScreenType.HOME)?.id
             val lockId = wallpaperRepository.getCurrentWallpaper(albumId, ScreenType.LOCK)?.id
             if (homeId != null && homeId == lockId) return listOf(ScreenType.BOTH)
@@ -199,10 +241,11 @@ class WallpaperController @Inject constructor(
 
     private fun ScreenType.renderScreen() = if (this == ScreenType.BOTH) ScreenType.HOME else this
 
-    private suspend fun applyBitmap(bitmap: Bitmap, screen: ScreenType, onApplied: suspend () -> Unit = {}) {
+    private suspend fun applyBitmap(op: Op, bitmap: Bitmap, screen: ScreenType, onApplied: suspend () -> Unit = {}) {
         try {
             currentCoroutineContext().ensureActive()
             wallpaperManager.setBitmapChecked(bitmap, screen.flags())
+            op.wrote(screen)
             withContext(NonCancellable) { onApplied() }
         } finally {
             bitmap.recycle()
@@ -212,9 +255,6 @@ class WallpaperController @Inject constructor(
     private fun combine(first: WallpaperChangeOutcome, second: WallpaperChangeOutcome) = WallpaperChangeOutcome(
         changed = first.changed || second.changed, emptyAlbum = first.emptyAlbum || second.emptyAlbum
     )
-
-    private fun ScheduleSettings.sameStaticPresentation() =
-        homeEffects == lockEffects && homeScalingType == lockScalingType && !homeScrollingEnabled
 
     private fun ScreenType.staticScreens() = if (this == ScreenType.BOTH) listOf(ScreenType.HOME, ScreenType.LOCK) else listOf(this)
 

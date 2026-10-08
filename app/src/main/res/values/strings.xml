@@ -235,12 +235,21 @@
   <string name="fold_sync_notification_title" translatable="false">Fold sync active</string>
   <string name="fold_sync_notification_text" translatable="false">Matching wallpapers when you fold or unfold</string>
   <string name="fold_settings_section" translatable="false">Foldable screens</string>
-  <string name="fold_sync_setting" translatable="false">Sync cover screen</string>
+  <string name="fold_sync_setting" translatable="false">Match both screens</string>
   <string name="fold_sync_setting_desc" translatable="false">Show the current wallpaper on whichever screen you\'re using after you fold or unfold</string>
   <string name="fold_prerender_setting" translatable="false">Fast fold</string>
-  <string name="fold_prerender_setting_desc" translatable="false">Prepare the cover wallpaper ahead of time so folding is near-instant</string>
+  <string name="fold_prerender_setting_desc" translatable="false">Prepare the other screen\'s wallpaper ahead of time so folding and unfolding are near-instant</string>
   <string name="fold_wait_media_setting" translatable="false">Wait for media when folding</string>
-  <string name="fold_wait_media_setting_desc" translatable="false">If something is playing, update the cover after it stops or the screen turns off</string>
+  <string name="fold_wait_media_setting_desc" translatable="false">If something is playing, update the screen after it stops or the screen turns off</string>
+  <string name="fold_resync" translatable="false">Resync screens</string>
+  <string name="fold_resync_desc" translatable="false">Re-apply the current wallpaper to this screen now, and to the other screen the next time you fold or unfold</string>
+  <string name="fold_resync_action" translatable="false">Resync</string>
+  <string name="fold_resync_started" translatable="false">Resyncing this screen</string>
+  <string name="fold_preview_title" translatable="false">Your screens</string>
+  <string name="fold_panel_main" translatable="false">Main screen</string>
+  <string name="fold_panel_cover" translatable="false">Cover screen</string>
+  <string name="fold_separate_cover" translatable="false">Customize cover screen</string>
+  <string name="fold_separate_cover_desc" translatable="false">Give the cover screen its own scaling and effects. Tap a screen in the preview to edit it</string>
   <string name="quiet_settings_section" translatable="false">Quiet changes</string>
   <string name="quiet_screen_off_setting" translatable="false">Change only when screen is off</string>
   <string name="quiet_screen_off_setting_desc" translatable="false">Scheduled changes wait until the screen turns off, so the recolor happens out of sight</string>

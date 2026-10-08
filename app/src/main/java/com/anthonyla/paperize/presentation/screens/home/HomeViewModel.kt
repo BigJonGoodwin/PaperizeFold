@@ -5,6 +5,7 @@ import android.content.Intent
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.anthonyla.paperize.core.FoldPanel
 import com.anthonyla.paperize.core.WallpaperMode
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.constants.Constants
@@ -14,6 +15,8 @@ import com.anthonyla.paperize.domain.model.ScheduleSettings
 import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.domain.usecase.CreateAlbumUseCase
 import com.anthonyla.paperize.domain.repository.AlbumRepository
+import com.anthonyla.paperize.service.fold.FoldInfo
+import com.anthonyla.paperize.service.fold.FoldState
 import com.anthonyla.paperize.service.wallpaper.WallpaperChangeService
 import com.anthonyla.paperize.service.worker.WallpaperScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -44,7 +47,8 @@ class HomeViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val wallpaperScheduler: WallpaperScheduler,
     private val wallpaperRepository: com.anthonyla.paperize.domain.repository.WallpaperRepository,
-    private val quietChangeGate: com.anthonyla.paperize.service.quiet.QuietChangeGate
+    private val quietChangeGate: com.anthonyla.paperize.service.quiet.QuietChangeGate,
+    private val foldState: FoldState
 ) : ViewModel() {
 
     companion object {
@@ -118,6 +122,14 @@ class HomeViewModel @Inject constructor(
                 wallpaperRepository.getCurrentWallpaperFlow(albumId, ScreenType.BOTH)
             ) { specific, both -> (specific ?: both)?.uri }
         }
+
+    /** PaperizeFold: which screen is in use and how big each screen is, for the previews. */
+    val foldInfo: StateFlow<FoldInfo> = foldState.info
+
+    /** PaperizeFold: re-read the fold state (the activity is told when the phone folds). */
+    fun refreshFoldState() {
+        foldState.refresh()
+    }
 
     private val _showLiveWallpaperPrompt = MutableStateFlow(false)
     val showLiveWallpaperPrompt: StateFlow<Boolean> = _showLiveWallpaperPrompt
@@ -230,7 +242,11 @@ class HomeViewModel @Inject constructor(
             if (schedulingChanged) {
                 wallpaperScheduler.updateSchedules(validated, mode)
             }
-            if (validated.enableChanger && validated.hasRequiredAlbums(mode) && displayChanged && mode == WallpaperMode.STATIC) {
+            // PaperizeFold: only re-apply when the screen in use looks different. Edits to the
+            // other screen's look are picked up when the phone is next folded or unfolded.
+            val panel = foldState.activePanel() ?: FoldPanel.MAIN
+            val visibleLookChanged = validated.lookKey(panel) != currentSettings.lookKey(panel)
+            if (validated.enableChanger && validated.hasRequiredAlbums(mode) && displayChanged && visibleLookChanged && mode == WallpaperMode.STATIC) {
                 // PaperizeFold: collect effect edits and apply them once after leaving the app,
                 // instead of re-setting the wallpaper (and recoloring) for every slider change.
                 if (!quietChangeGate.requestEffectsReapply()) {

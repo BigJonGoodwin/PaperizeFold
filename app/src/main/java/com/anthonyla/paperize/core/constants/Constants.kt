@@ -194,6 +194,12 @@ object PreferenceKeys {
     // Behavior
     const val ADAPTIVE_BRIGHTNESS = "adaptive_brightness"
 
+    // PaperizeFold: cover screen look (effect keys are a prefix plus the effect name)
+    const val SEPARATE_COVER_SETTINGS = "fold_separate_cover_settings"
+    const val COVER_SCALING_TYPE = "fold_cover_scaling_type"
+    const val COVER_HOME_EFFECTS_PREFIX = "fold_cover_home_"
+    const val COVER_LOCK_EFFECTS_PREFIX = "fold_cover_lock_"
+
     // First launch
     const val FIRST_LAUNCH = "first_launch"
 

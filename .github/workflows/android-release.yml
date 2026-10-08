@@ -7,6 +7,11 @@ on:
   push:
     branches: [ "master" ]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub Release (off = build and test only)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -60,10 +65,18 @@ jobs:
             } >> "$GITHUB_ENV"
           fi
 
-      - name: Build release APK
+      - name: Build release APK and run unit tests
         env:
           FOLD_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease testReleaseUnitTest --continue
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          retention-days: 7
 
       - name: Name APK
         id: apk
@@ -72,7 +85,16 @@ jobs:
           mv app/build/outputs/apk/release/app-release.apk "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
+      - name: Upload test APK
+        if: github.event_name == 'workflow_dispatch' && !inputs.release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.name }}
+          retention-days: 7
+
       - name: Publish GitHub Release
+        if: github.event_name != 'workflow_dispatch' || inputs.release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

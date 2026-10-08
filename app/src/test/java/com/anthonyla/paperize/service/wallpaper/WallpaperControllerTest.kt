@@ -11,6 +11,7 @@ import com.anthonyla.paperize.domain.model.ScheduleSettings
 import com.anthonyla.paperize.domain.repository.SettingsRepository
 import com.anthonyla.paperize.domain.usecase.ChangeWallpaperUseCase
 import com.anthonyla.paperize.domain.usecase.ReapplyEffectsUseCase
+import com.anthonyla.paperize.service.fold.PanelTracker
 import io.mockk.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -24,7 +25,11 @@ class WallpaperControllerTest {
     private val prepare = mockk<ChangeWallpaperUseCase>(relaxed = true)
     private val render = mockk<ReapplyEffectsUseCase>()
     private val settingsRepository = mockk<SettingsRepository>(relaxed = true)
-    private val controller = WallpaperController(mockk<Context>(), manager, prepare, render, settingsRepository, mockk(relaxed = true))
+    private val tracker = mockk<PanelTracker> {
+        every { begin() } returns null
+        coEvery { end(any(), any()) } just Runs
+    }
+    private val controller = WallpaperController(mockk<Context>(), manager, prepare, render, settingsRepository, mockk(relaxed = true), tracker)
     private val settings = ScheduleSettings(homeAlbumId = "album", lockAlbumId = "album")
     private val bitmap = mockk<Bitmap>(relaxed = true)
     private val prepared = PreparedWallpaper(bitmap, "album", ScreenType.HOME, "image", false)
@@ -96,6 +101,20 @@ class WallpaperControllerTest {
         coVerify { prepare.completeSpecific("album", ScreenType.HOME, "selected", false) }
         coVerify { prepare.completeSpecific("album", ScreenType.LOCK, "selected", false) }
         verify { bitmap.recycle() }
+    }
+
+    @Test fun `writes report exactly the accepted screens to the fold tracker`() = runTest {
+        coEvery { prepare("album", ScreenType.HOME) } returns Result.Success(prepared)
+        every { manager.setBitmap(bitmap, null, true, 3) } returns 1
+        controller.change(ScreenType.BOTH, settings)
+        coVerify(exactly = 1) { tracker.end(null, setOf(ScreenType.HOME, ScreenType.LOCK)) }
+    }
+
+    @Test fun `rejected writes report nothing written to the fold tracker`() = runTest {
+        coEvery { prepare("album", ScreenType.HOME) } returns Result.Success(prepared)
+        every { manager.setBitmap(bitmap, null, true, 1) } returns 0
+        try { controller.change(ScreenType.HOME, settings); fail("Expected rejection") } catch (_: IOException) { }
+        coVerify(exactly = 1) { tracker.end(null, emptySet()) }
     }
 
     @Test fun `reapplying a readable current image does not consume the next item`() = runTest {

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.anthonyla.paperize.R
 import com.anthonyla.paperize.core.EmptyAlbumException
+import com.anthonyla.paperize.core.FoldPanel
 import com.anthonyla.paperize.core.NoValidWallpaperException
 import com.anthonyla.paperize.core.Result
 import com.anthonyla.paperize.core.ScreenType
@@ -33,7 +34,12 @@ class ChangeWallpaperUseCase @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val renderer: WallpaperRenderer
 ) {
-    suspend operator fun invoke(albumId: String, screenType: ScreenType): Result<PreparedWallpaper> = Result.runCatching {
+    /** @param panel PaperizeFold: foldable screen to render for; null means the one in use. */
+    suspend operator fun invoke(
+        albumId: String,
+        screenType: ScreenType,
+        panel: FoldPanel? = null
+    ): Result<PreparedWallpaper> = Result.runCatching {
         val settings = settingsRepository.getScheduleSettings()
         repeat(Constants.MAX_WALLPAPER_LOAD_RETRIES) {
             currentCoroutineContext().ensureActive()
@@ -43,7 +49,7 @@ class ChangeWallpaperUseCase @Inject constructor(
                     ?: throw EmptyAlbumException(context.getString(R.string.no_wallpapers_in_album))
             }
             try {
-                val bitmap = renderer.render(candidate, screenType, settings)
+                val bitmap = renderer.render(candidate, screenType, settings, panel)
                 if (bitmap != null) {
                     return@runCatching PreparedWallpaper(bitmap, albumId, screenType, candidate.id, settings.shuffleEnabled)
                 }

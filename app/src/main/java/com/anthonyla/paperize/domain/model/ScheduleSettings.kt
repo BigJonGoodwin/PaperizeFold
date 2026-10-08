@@ -1,5 +1,6 @@
 package com.anthonyla.paperize.domain.model
 
+import com.anthonyla.paperize.core.FoldPanel
 import com.anthonyla.paperize.core.ScreenType
 import com.anthonyla.paperize.core.WallpaperMode
 import com.anthonyla.paperize.core.ScalingType
@@ -24,8 +25,73 @@ data class ScheduleSettings(
     val liveAlbumId: String? = null,
     val liveScalingType: ScalingType = ScalingType.FILL,
     val liveEffects: WallpaperEffects = WallpaperEffects(),
-    val adaptiveBrightness: Boolean = false
+    val adaptiveBrightness: Boolean = false,
+    // PaperizeFold: an optional separate look for the cover screen of a foldable.
+    val separateCoverSettings: Boolean = false,
+    val coverScalingType: ScalingType = ScalingType.FILL,
+    val coverHomeEffects: WallpaperEffects = WallpaperEffects(),
+    val coverLockEffects: WallpaperEffects = WallpaperEffects()
 ) {
+    /** True when the cover screen uses its own scaling and effects. */
+    private fun usesCoverLook(panel: FoldPanel) = panel == FoldPanel.COVER && separateCoverSettings
+
+    /** Effects for [screen] as shown on [panel]. LIVE always uses the live settings. */
+    fun effectsFor(screen: ScreenType, panel: FoldPanel = FoldPanel.MAIN): WallpaperEffects = when {
+        screen == ScreenType.LIVE -> liveEffects
+        usesCoverLook(panel) -> if (screen == ScreenType.LOCK) coverLockEffects else coverHomeEffects
+        screen == ScreenType.LOCK -> lockEffects
+        else -> homeEffects
+    }
+
+    /** Scaling for [screen] as shown on [panel]. LIVE always uses the live settings. */
+    fun scalingFor(screen: ScreenType, panel: FoldPanel = FoldPanel.MAIN): ScalingType = when {
+        screen == ScreenType.LIVE -> liveScalingType
+        usesCoverLook(panel) -> coverScalingType
+        screen == ScreenType.LOCK -> lockScalingType
+        else -> homeScalingType
+    }
+
+    /** Home and lock look identical on [panel], so one wallpaper write can cover both. */
+    fun samePresentation(panel: FoldPanel = FoldPanel.MAIN): Boolean =
+        effectsFor(ScreenType.HOME, panel) == effectsFor(ScreenType.LOCK, panel) &&
+            scalingFor(ScreenType.HOME, panel) == scalingFor(ScreenType.LOCK, panel) &&
+            !homeScrollingEnabled
+
+    /**
+     * Everything that changes how the static [screen] wallpaper looks on [panel], as a string that
+     * stays the same across app restarts (it is stored to remember what each screen shows).
+     */
+    fun lookKey(screen: ScreenType, panel: FoldPanel): String {
+        val slot = if (screen == ScreenType.LOCK) ScreenType.LOCK else ScreenType.HOME
+        val effects = effectsFor(slot, panel)
+        return listOf(
+            slot.name,
+            scalingFor(slot, panel).name,
+            effects.enableDarken, effects.darkenPercentage,
+            effects.enableBlur, effects.blurPercentage,
+            effects.enableVignette, effects.vignettePercentage,
+            effects.enableGrayscale, effects.grayscalePercentage,
+            slot == ScreenType.HOME && homeScrollingEnabled,
+            adaptiveBrightness
+        ).joinToString(",")
+    }
+
+    /** How static wallpapers look on [panel], covering both home and lock. */
+    fun lookKey(panel: FoldPanel): String =
+        lookKey(ScreenType.HOME, panel) + ";" + lookKey(ScreenType.LOCK, panel)
+
+    /** Copies the main screen look into the cover settings (used when they are first split). */
+    fun withCoverLookFromMain(): ScheduleSettings = copy(
+        coverScalingType = homeScalingType,
+        coverHomeEffects = homeEffects,
+        coverLockEffects = lockEffects
+    )
+
+    /** The cover look has never been edited (all defaults). */
+    val hasDefaultCoverLook: Boolean
+        get() = coverScalingType == ScalingType.FILL &&
+            coverHomeEffects == WallpaperEffects() && coverLockEffects == WallpaperEffects()
+
     val effectiveLockIntervalMinutes: Int
         get() = if (homeEnabled && lockEnabled && separateSchedules) lockIntervalMinutes else homeIntervalMinutes
 
@@ -58,7 +124,9 @@ data class ScheduleSettings(
         liveIntervalMinutes = liveIntervalMinutes.coerceAtLeast(Constants.MIN_LIVE_INTERVAL_MINUTES),
         homeEffects = homeEffects.validate(),
         lockEffects = lockEffects.validate(),
-        liveEffects = liveEffects.validate()
+        liveEffects = liveEffects.validate(),
+        coverHomeEffects = coverHomeEffects.validate(),
+        coverLockEffects = coverLockEffects.validate()
     )
 
     fun hasSchedulingChanges(other: ScheduleSettings): Boolean {
@@ -83,7 +151,11 @@ data class ScheduleSettings(
                lockEffects != other.lockEffects ||
                liveEffects != other.liveEffects ||
                liveScalingType != other.liveScalingType ||
-               adaptiveBrightness != other.adaptiveBrightness
+               adaptiveBrightness != other.adaptiveBrightness ||
+               separateCoverSettings != other.separateCoverSettings ||
+               coverScalingType != other.coverScalingType ||
+               coverHomeEffects != other.coverHomeEffects ||
+               coverLockEffects != other.coverLockEffects
     }
 
 }

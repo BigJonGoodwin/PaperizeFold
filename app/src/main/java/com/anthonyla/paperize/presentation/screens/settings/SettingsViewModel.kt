@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.anthonyla.paperize.core.WallpaperMode
 import com.anthonyla.paperize.data.datastore.FoldPreferences
 import com.anthonyla.paperize.data.datastore.FoldSettings
+import com.anthonyla.paperize.service.fold.FoldCoordinator
 import com.anthonyla.paperize.service.quiet.QuietChangeGate
 import com.anthonyla.paperize.domain.model.AppSettings
 import com.anthonyla.paperize.domain.repository.AlbumRepository
@@ -28,7 +29,8 @@ class SettingsViewModel @Inject constructor(
     private val albumRepository: AlbumRepository,
     private val wallpaperScheduler: WallpaperScheduler,
     private val foldPreferences: FoldPreferences,
-    private val quietChangeGate: QuietChangeGate
+    private val quietChangeGate: QuietChangeGate,
+    private val foldCoordinator: FoldCoordinator
 ) : ViewModel() {
 
     companion object {
@@ -57,6 +59,9 @@ class SettingsViewModel @Inject constructor(
         // Loosening a rule may let a waiting change run right away.
         quietChangeGate.evaluateAsync()
     }
+
+    /** PaperizeFold: re-apply the current wallpaper to this screen now, the other on next fold. */
+    fun resyncScreens() = foldCoordinator.resyncNow()
 
     fun updateDarkMode(enabled: Boolean) {
         viewModelScope.launch {
