@@ -6,6 +6,7 @@ name: PaperizeFold Build
 on:
   push:
     branches: [ "master" ]
+    paths-ignore: [ "**.md" ]
   workflow_dispatch:
     inputs:
       release:

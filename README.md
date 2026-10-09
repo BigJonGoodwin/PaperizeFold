@@ -1,4 +1,34 @@
 <div align="center">
+  <h1>Paperize Fold</h1>
+  <p><strong>A fork of <a href="https://github.com/Anthonyy232/Paperize">Paperize</a> built for book-style foldables like the Galaxy Z Fold</strong></p>
+</div>
+
+> **Made with AI.** Every PaperizeFold change in this fork was written by Claude (Anthropic's AI) in conversation with me, BigJonGoodwin. I described what I wanted on my Z Fold 6 and tested it; Claude wrote the code, tests and build setup. The original Paperize app is by [Anthonyy232](https://github.com/Anthonyy232) and all credit for it goes to them. Please report fork issues here, not upstream.
+
+## Why this fork
+
+On Samsung foldables, an app can only set the wallpaper of the screen that's in use. Paperize changes the main screen, and the cover screen falls behind (or the other way round). This fork keeps both screens matched and adds tools for setting up each screen.
+
+## What's different from Paperize
+
+- **Fold sync** — after you fold or unfold, the screen you're using is updated to the current wallpaper. The other screen's image is prepared ahead of time so the switch is quick. It remembers what each screen shows and only rewrites a screen that's out of date.
+- **Both-screens preview** — the main and cover screens side by side at their real shapes, with scaling and effects shown live as you move the sliders.
+- **Separate cover screen look** — optional scaling and effects just for the cover screen.
+- **Unfolded layout** — the preview stays beside the controls on the big screen.
+- **Quiet changes** — scheduled changes wait until the screen is off and nothing is playing, so theming apps (Material You, ColorBlendr) don't recolor while you're watching something. Effect edits apply once when you leave the app.
+- **Settings → Foldable screens** — turn fold sync on/off, fast fold, wait for media, and a **Resync screens** button.
+
+Works on regular phones too (quiet changes and the effects preview); fold features only appear on foldables.
+
+## Install
+
+Download the latest APK from [Releases](https://github.com/BigJonGoodwin/PaperizeFold/releases), or add this repo to [Obtainium](https://github.com/ImranR98/Obtainium) for automatic updates. It installs alongside the original Paperize (different app ID) and is signed with this fork's own key.
+
+---
+
+## Original Paperize README
+
+<div align="center">
   <img style="display: block" src="https://github.com/user-attachments/assets/e8fb14f5-ec8e-440e-a2ac-8065322b0e28" alt="">
   <h1>Paperize</h1>
   <p><strong>A dynamic wallpaper changer that keeps your device's aesthetic fresh and exciting</strong></p>
